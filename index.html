@@ -471,7 +471,11 @@ function mergeServer(server) {
     server[t].forEach(sr => {
       sr = coerceRow(t, sr);
       const cur = map.get(sr.id);
-      if (!cur || (Number(sr.updated) || 0) >= (Number(cur.updated) || 0)) map.set(sr.id, sr);
+      const winner = (!cur || (Number(sr.updated) || 0) >= (Number(cur.updated) || 0)) ? sr : cur;
+      // deletions are sticky: once deleted anywhere it stays deleted, so a stale
+      // copy on another device can't resurrect it (there is no un-delete flow)
+      if ((cur && cur.deleted) || sr.deleted) winner.deleted = true;
+      map.set(sr.id, winner);
     });
     DB[t] = Array.from(map.values());
   });
