@@ -14,8 +14,8 @@
 
 var TABLES = {
   Exercises: ['id', 'name', 'weightType', 'category', 'step', 'inverted', 'archived', 'sortOrder', 'updated'],
-  Workouts:  ['id', 'date', 'type', 'participants', 'status', 'notes', 'updated'],
-  Sets:      ['id', 'workoutId', 'exerciseId', 'person', 'scheme', 'weight', 'reps', 'ts', 'updated', 'duration', 'rest', 'number', 'warmup']
+  Workouts:  ['id', 'date', 'type', 'participants', 'status', 'notes', 'plannedEx', 'deleted', 'updated'],
+  Sets:      ['id', 'workoutId', 'exerciseId', 'person', 'scheme', 'weight', 'reps', 'ts', 'duration', 'rest', 'number', 'warmup', 'deleted', 'updated']
 };
 
 // Wraps any object as a JSON HTTP response.
@@ -109,7 +109,12 @@ function upsert_(name, row) {
   var headers = headerOf_(sh);          // write by the sheet's own column order
   var idCol = headers.indexOf('id');
   if (idCol < 0) idCol = 0;
-  var rowValues = headers.map(function (h) { return row[h] === undefined ? '' : row[h]; });
+  var rowValues = headers.map(function (h) {
+    var v = row[h];
+    if (v === undefined || v === null) return '';
+    if (typeof v === 'object') return JSON.stringify(v); // e.g. plannedEx array -> JSON string
+    return v;
+  });
   var data = sh.getDataRange().getValues();
 
   for (var r = 1; r < data.length; r++) {

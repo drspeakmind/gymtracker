@@ -446,7 +446,11 @@ function coerceRow(table, r) {
   const o = Object.assign({}, r);
   ['step','weight','reps','scheme','sortOrder','updated','ts','duration','rest','number'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
   ['inverted','archived','deleted','warmup'].forEach(k => { if (typeof o[k] === 'string') o[k] = (o[k] === 'true' || o[k] === 'TRUE'); });
-  if (table === 'Workouts' && o.date) o.date = dateKey(o.date);
+  if (table === 'Workouts') {
+    if (o.date) o.date = dateKey(o.date);
+    if (typeof o.plannedEx === 'string') { try { o.plannedEx = o.plannedEx ? JSON.parse(o.plannedEx) : []; } catch (e) { o.plannedEx = []; } }
+    if (!Array.isArray(o.plannedEx)) o.plannedEx = [];
+  }
   return o;
 }
 
