@@ -252,8 +252,10 @@ const SEED_EXERCISES = [
   ex('KB squats',             'kettlebell','Legs',      4),
   ex('Good mornings',         'plate',     'Legs',      2.5),
 ];
+function slugId(name) { return 'std-' + String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
 function ex(name, weightType, category, step, inverted) {
-  return { id: uid(), name, weightType, category, step, inverted: !!inverted, archived: false, sortOrder: 0, updated: 0 };
+  // stable id derived from the name, so re-seeding never creates a new duplicate
+  return { id: slugId(name), name, weightType, category, step, inverted: !!inverted, archived: false, sortOrder: 0, updated: 0 };
 }
 
 // Built-in exercises that should exist for everyone, including libraries created
@@ -268,6 +270,39 @@ function ensureDefaultExercises() {
     const row = Object.assign({ archived: false, sortOrder: DB.Exercises.length + i, updated: Date.now() }, d);
     DB.Exercises.push(row);
     enqueue('Exercises', row, true);
+  });
+}
+// Self-healing: collapse exercises that share a name (case-insensitive) onto a
+// single canonical copy — the one with the most logged sets (ties broken by id
+// for cross-device determinism). Any sets / planned lists on the duplicates are
+// re-pointed to the canonical so history is preserved, then the duplicate is
+// archived out of the active library.
+function dedupeExercises() {
+  const groups = {};
+  DB.Exercises.forEach(e => {
+    if (e.archived) return;
+    const k = (e.name || '').trim().toLowerCase();
+    if (k) (groups[k] = groups[k] || []).push(e);
+  });
+  Object.keys(groups).forEach(k => {
+    const g = groups[k];
+    if (g.length < 2) return;
+    // survivor = lowest id — purely deterministic so every device picks the SAME
+    // canonical (avoids two phones archiving different copies). All sets from the
+    // others are re-pointed onto it, so no history is lost regardless of choice.
+    g.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const canon = g[0];
+    g.slice(1).forEach(dup => {
+      DB.Sets.forEach(s => { if (s.exerciseId === dup.id) { s.exerciseId = canon.id; upsert('Sets', s); } });
+      DB.Workouts.forEach(w => {
+        if (Array.isArray(w.plannedEx) && w.plannedEx.indexOf(dup.id) !== -1) {
+          w.plannedEx = w.plannedEx.map(id => id === dup.id ? canon.id : id).filter((v, i, a) => a.indexOf(v) === i);
+          upsert('Workouts', w);
+        }
+      });
+      dup.archived = true;
+      upsert('Exercises', dup);
+    });
   });
 }
 
@@ -348,11 +383,15 @@ function load() {
   try { DB = JSON.parse(localStorage.getItem('gym.db')) || DB; } catch (e) {}
   try { CFG = Object.assign(CFG, JSON.parse(localStorage.getItem('gym.cfg')) || {}); } catch (e) {}
   try { QUEUE = JSON.parse(localStorage.getItem('gym.queue')) || []; } catch (e) {}
-  if (!DB.Exercises || DB.Exercises.length === 0) {
+  // Only auto-seed when there's nothing to pull from (local-only first run).
+  // On a Sheet-connected device the library comes from the pull, so we don't
+  // seed a fresh random set that would collide with it.
+  if ((!DB.Exercises || DB.Exercises.length === 0) && !CFG.scriptUrl) {
     DB.Exercises = SEED_EXERCISES.map((e, i) => Object.assign(e, { sortOrder: i, updated: Date.now() }));
     DB.Exercises.forEach(e => enqueue('Exercises', e, true));
   }
   ensureDefaultExercises();  // add any built-ins missing from an existing library
+  dedupeExercises();         // heal any pre-existing duplicates
   save();
 }
 
@@ -441,6 +480,7 @@ function mergeServer(server) {
     const arr = DB[q.table], i = arr.findIndex(r => r.id === q.row.id);
     if (i >= 0) arr[i] = q.row; else arr.push(q.row);
   });
+  dedupeExercises();  // heal duplicates that arrive via sync
 }
 function coerceRow(table, r) {
   const o = Object.assign({}, r);
