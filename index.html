@@ -445,7 +445,7 @@ function mergeServer(server) {
 function coerceRow(table, r) {
   const o = Object.assign({}, r);
   ['step','weight','reps','scheme','sortOrder','updated','ts','duration','rest','number'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
-  ['inverted','archived','deleted'].forEach(k => { if (typeof o[k] === 'string') o[k] = (o[k] === 'true' || o[k] === 'TRUE'); });
+  ['inverted','archived','deleted','warmup'].forEach(k => { if (typeof o[k] === 'string') o[k] = (o[k] === 'true' || o[k] === 'TRUE'); });
   if (table === 'Workouts' && o.date) o.date = dateKey(o.date);
   return o;
 }
@@ -531,11 +531,16 @@ function renderLog() {
     w.notes ? el('div', { class: 'small muted', style: 'margin-top:8px', text: '📝 ' + w.notes }) : el('span'),
   ]));
 
-  // exercises in this workout, most-recently-added first so the one you're
-  // currently filling out sits at the top
+  // order exercises by most-recent set activity so the one you're currently
+  // logging bubbles to the top; not-yet-started exercises keep their planned
+  // order at the bottom
   const order = (w.plannedEx || []).slice();
-  setsForWorkout(w.id).forEach(s => { if (!order.includes(s.exerciseId)) order.push(s.exerciseId); });
-  order.reverse();
+  const lastTs = {};
+  setsForWorkout(w.id).forEach(s => {
+    if (!order.includes(s.exerciseId)) order.push(s.exerciseId);
+    lastTs[s.exerciseId] = Math.max(lastTs[s.exerciseId] || 0, s.ts || 0);
+  });
+  order.sort((a, b) => (lastTs[b] || 0) - (lastTs[a] || 0)); // stable: ties keep planned order
 
   // action buttons sit directly under the current exercise; finished ones drop below
   const actions = el('div', {}, [
@@ -577,7 +582,11 @@ function exerciseLogCard(w, exId) {
   const groups = Object.keys(byTs).sort((a, b) => a - b);
   groups.forEach((ts, idx) => {
     const grp = byTs[ts];
-    const line = el('div', { class: 'set-line' }, [ el('span', { class: 'muted tiny', text: '#' + (idx + 1) }) ]);
+    const isWarm = grp.some(s => s.warmup);
+    const line = el('div', { class: 'set-line' }, [
+      el('span', { class: 'muted tiny', text: '#' + (idx + 1) }),
+    ]);
+    if (isWarm) line.appendChild(el('span', { class: 'pill tiny', text: 'warm-up' }));
     PEOPLE.forEach(p => {
       const s = grp.find(x => x.person === p);
       const pl = p.toLowerCase();
@@ -606,7 +615,7 @@ function duplicateSet(w, exercise, grp) {
   const ts = Date.now();
   grp.forEach(s => upsert('Sets', { id: uid(), workoutId: w.id, exerciseId: exercise.id, person: s.person,
     scheme: s.scheme, weight: s.weight, reps: s.reps, duration: s.duration, rest: s.rest, number: s.number,
-    ts, deleted: false, updated: 0 }));
+    warmup: s.warmup, ts, deleted: false, updated: 0 }));
   renderLog(); toast('Set duplicated');
 }
 
@@ -626,6 +635,7 @@ function addSetModal(w, exercise) {
   const prev = lastSet(exercise.id, 'Neil') || lastSet(exercise.id, 'Simon');
   let scheme = prev ? Number(prev.scheme) : 5;
   let split = false;
+  let warmup = false;
   // working values per person
   const vals = {
     Neil:  pickStart(exercise, 'Neil'),
@@ -671,7 +681,15 @@ function addSetModal(w, exercise) {
       PEOPLE.forEach(p => m.appendChild(personEntry(exercise, p, vals[p], true)));
     }
 
-    const actions = el('div', { class: 'row', style: 'margin-top:18px;gap:10px' }, [
+    // warm-up flag — warm-up sets are excluded from Progress
+    const warmCb = el('input', { type: 'checkbox' }); warmCb.checked = warmup;
+    warmCb.addEventListener('change', () => { warmup = warmCb.checked; });
+    m.appendChild(el('label', { class: 'checkline', style: 'border:none;margin-top:8px' }, [
+      warmCb, el('span', { text: 'Warm-up set' }), el('span', { class: 'spacer' }),
+      el('span', { class: 'tiny muted', text: 'excluded from Progress' }),
+    ]));
+
+    const actions = el('div', { class: 'row', style: 'margin-top:14px;gap:10px' }, [
       el('button', { class: 'btn ghost', style: 'flex:1', text: 'Close', onclick: closeModal }),
       el('button', { class: 'btn', style: 'flex:2', text: 'Save set', onclick: doSave }),
     ]);
@@ -713,7 +731,7 @@ function addSetModal(w, exercise) {
   function doSave() {
     const ts = Date.now();
     function makeSet(person, v) {
-      const base = { id: uid(), workoutId: w.id, exerciseId: exercise.id, person, ts, deleted: false, updated: 0 };
+      const base = { id: uid(), workoutId: w.id, exerciseId: exercise.id, person, ts, warmup: warmup, deleted: false, updated: 0 };
       if (isSprint) return Object.assign(base, { scheme: '', weight: 0, reps: 0,
         duration: Math.round(v.duration), rest: Math.round(v.rest), number: Math.round(v.number) });
       return Object.assign(base, { scheme, weight: round2(v.weight), reps: Math.round(v.reps) });
@@ -879,7 +897,7 @@ function renderProgress() {
 // ---- history helpers ----
 function workoutDate(s) { const w = workoutById(s.workoutId); return dateKey((w && w.date) || new Date(s.ts).toISOString().slice(0, 10)); }
 function setsFor(exId, person, scheme) {
-  return DB.Sets.filter(s => s.exerciseId === exId && s.person === person && !s.deleted
+  return DB.Sets.filter(s => s.exerciseId === exId && s.person === person && !s.deleted && !s.warmup
       && (scheme === undefined || Number(s.scheme) === Number(scheme)))
     .sort((a, b) => (a.ts || 0) - (b.ts || 0));
 }
@@ -918,9 +936,9 @@ function historyBlock(p, byDate, opts) {
   let bestDate = dates[0];
   dates.forEach(d => { if (opts.score(byDate[d]) > opts.score(byDate[bestDate])) bestDate = d; });
   info.appendChild(el('div', { class: 'small', html:
-    '<span class="muted">Last</span> <span class="muted tiny">' + fmtDate(lastDate) + '</span><br>' + setListHtml(byDate[lastDate], opts.sprint) }));
+    '<span class="muted">Last Session:</span> <span class="muted tiny">' + fmtDate(lastDate) + '</span><br>' + setListHtml(byDate[lastDate], opts.sprint) }));
   info.appendChild(el('div', { class: 'small', style: 'margin-top:5px', html:
-    '<span class="muted">Best</span> <span class="muted tiny">' + fmtDate(bestDate) + ' · ' + opts.bestNote(byDate[bestDate]) + '</span><br>' + setListHtml(byDate[bestDate], opts.sprint) }));
+    '<span class="muted">Best Effort:</span> <span class="muted tiny">' + fmtDate(bestDate) + ' · ' + opts.bestNote(byDate[bestDate]) + '</span><br>' + setListHtml(byDate[bestDate], opts.sprint) }));
   return block;
 }
 function historyCard(exr, scheme, label) {

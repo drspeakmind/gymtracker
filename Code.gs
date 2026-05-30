@@ -15,7 +15,7 @@
 var TABLES = {
   Exercises: ['id', 'name', 'weightType', 'category', 'step', 'inverted', 'archived', 'sortOrder', 'updated'],
   Workouts:  ['id', 'date', 'type', 'participants', 'status', 'notes', 'updated'],
-  Sets:      ['id', 'workoutId', 'exerciseId', 'person', 'scheme', 'weight', 'reps', 'ts', 'updated', 'duration', 'rest', 'number']
+  Sets:      ['id', 'workoutId', 'exerciseId', 'person', 'scheme', 'weight', 'reps', 'ts', 'updated', 'duration', 'rest', 'number', 'warmup']
 };
 
 // Wraps any object as a JSON HTTP response.
