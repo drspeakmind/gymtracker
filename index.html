@@ -1063,7 +1063,9 @@ function renderExercises() {
     items.forEach(e => c.appendChild(exerciseRow(e)));
     list.appendChild(c);
   });
-  const archived = DB.Exercises.filter(e => e.archived);
+  // don't show dedupe leftovers: an archived copy whose name is still active
+  const activeNames = new Set(DB.Exercises.filter(e => !e.archived).map(e => (e.name || '').trim().toLowerCase()));
+  const archived = DB.Exercises.filter(e => e.archived && !activeNames.has((e.name || '').trim().toLowerCase()));
   if (!archived.length) arch.appendChild(el('div', { class: 'small muted', text: 'Nothing archived.' }));
   else { const c = el('div', { class: 'card' }); archived.forEach(e => c.appendChild(exerciseRow(e))); arch.appendChild(c); }
 }
