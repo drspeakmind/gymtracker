@@ -261,6 +261,21 @@ function ex(name, weightType, category, step, inverted) {
   return { id: uid(), name, weightType, category, step, inverted: !!inverted, archived: false, sortOrder: 0, updated: 0 };
 }
 
+// Built-in exercises that should exist for everyone, including libraries created
+// before they were added. Fixed ids keep both phones pointing at the same row
+// (so it never duplicates across devices). Adding more here is safe.
+const DEFAULT_EXERCISES = [
+  { id: 'ex-assault-bike-sprints', name: 'Assault bike sprints', weightType: 'sprint', category: 'Cardio', step: 0, inverted: false },
+];
+function ensureDefaultExercises() {
+  DEFAULT_EXERCISES.forEach((d, i) => {
+    if (DB.Exercises.some(e => e.id === d.id)) return;
+    const row = Object.assign({ archived: false, sortOrder: DB.Exercises.length + i, updated: Date.now() }, d);
+    DB.Exercises.push(row);
+    enqueue('Exercises', row, true);
+  });
+}
+
 // ---------- state ----------
 let DB = { Exercises: [], Workouts: [], Sets: [] };
 let CFG = { scriptUrl: '', activeWorkoutId: null };
@@ -350,6 +365,8 @@ function load() {
     DB.Exercises = SEED_EXERCISES.map((e, i) => Object.assign(e, { sortOrder: i, updated: Date.now() }));
     DB.Exercises.forEach(e => enqueue('Exercises', e, true));
   }
+  ensureDefaultExercises();  // add any built-ins missing from an existing library
+  save();
 }
 
 // ---------- write + sync ----------
