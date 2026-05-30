@@ -266,7 +266,10 @@ const DEFAULT_EXERCISES = [
 ];
 function ensureDefaultExercises() {
   DEFAULT_EXERCISES.forEach((d, i) => {
-    if (DB.Exercises.some(e => e.id === d.id)) return;
+    // skip if it already exists by id OR by name — so promoting a gym-created
+    // exercise to a built-in can never create a duplicate
+    const dn = d.name.trim().toLowerCase();
+    if (DB.Exercises.some(e => e.id === d.id || (e.name || '').trim().toLowerCase() === dn)) return;
     const row = Object.assign({ archived: false, sortOrder: DB.Exercises.length + i, updated: Date.now() }, d);
     DB.Exercises.push(row);
     enqueue('Exercises', row, true);
