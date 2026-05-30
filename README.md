@@ -70,11 +70,12 @@ three steps on his phone with the same URL.
   remembered separately). **Sprints** are a special type: instead of weight × reps
   you log **duration / rest / number** (presets + manual). Each exercise card also
   has a 🗑 to remove it from the session, and *Duplicate last* to repeat a set.
-- **Progress** — pick an exercise. The top chart is **estimated 1RM** (Epley),
-  which puts 5-rep and 15-rep sets on one comparable strength line for both of
-  you; below is **volume** per session; then **personal-record** cards. Filter by
-  scheme. Assisted pull-ups are flagged *inverted* (less assistance = stronger),
-  so their chart and PRs read the right way round.
+- **Progress** — pick an exercise to see its **History**: for each scheme
+  (Heavy 5 / Light 15) and each of you, your **last** set (weight × reps + date)
+  and your **best-ever session by volume** (sets · top set · total kg + date) —
+  a quick way to see where you're at between workouts. Sprints show the last
+  effort and best session by total time. Below is a **volume per session** trend
+  chart you can filter by scheme.
 - **Exercises** — manage the library; archive what you don't use; toggle
   *inverted* for any assistance-based movement.
 

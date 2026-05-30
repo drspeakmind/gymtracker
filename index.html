@@ -181,7 +181,9 @@
         <span>Exercise</span>
         <select id="dashExercise"></select>
       </label>
-      <div class="row" style="margin-bottom:12px">
+      <div id="historyBox"></div>
+      <h2 class="section">Volume trend</h2>
+      <div class="row" id="dashSchemeRow" style="margin-bottom:10px">
         <div class="seg fill" id="dashScheme" style="flex:1">
           <button data-s="all" class="on">All</button>
           <button data-s="5">Heavy 5</button>
@@ -189,15 +191,8 @@
         </div>
       </div>
       <div class="card">
-        <div class="row"><strong id="metricTitle">Estimated 1RM</strong><span class="spacer"></span><span class="tiny muted" id="metricNote"></span></div>
-        <div class="chartbox"><canvas id="chartMain"></canvas></div>
-      </div>
-      <div class="card">
-        <strong>Volume per session</strong>
         <div class="chartbox"><canvas id="chartVol"></canvas></div>
       </div>
-      <h2 class="section">Personal records</h2>
-      <div class="grid2" id="prCards"></div>
     </section>
 
     <!-- EXERCISES -->
@@ -341,14 +336,6 @@ function renderAvatars(mode) {
   wrap.appendChild(el('div', { class: 'avhalf left' + (mode === 'Simon' ? ' off' : '') }));
   wrap.appendChild(el('div', { class: 'avhalf right' + (mode === 'Neil' ? ' off' : '') }));
   return wrap;
-}
-
-// Epley estimated 1RM
-function e1rm(weight, reps) {
-  weight = Number(weight) || 0; reps = Number(reps) || 0;
-  if (reps <= 0) return 0;
-  if (reps === 1) return weight;
-  return weight * (1 + reps / 30);
 }
 
 // ---------- persistence ----------
@@ -880,54 +867,110 @@ function renderDash() {
   if (!active.length) { sel.appendChild(el('option', { text: 'No exercises' })); }
   if (!UI.dashExerciseId || !active.find(e => e.id === UI.dashExerciseId)) UI.dashExerciseId = active[0] && active[0].id;
   sel.value = UI.dashExerciseId || '';
-  drawDashCharts();
+  renderProgress();
 }
-function drawDashCharts() {
+function renderProgress() {
   const exr = exById(UI.dashExerciseId);
-  const note = $('#metricNote'); const title = $('#metricTitle');
-  if (charts.main) { charts.main.destroy(); charts.main = null; }
+  $('#dashSchemeRow').style.display = (exr && exr.weightType === 'sprint') ? 'none' : '';
+  renderHistory();
+  drawVolChart();
+}
+
+// ---- history helpers ----
+function workoutDate(s) { const w = workoutById(s.workoutId); return dateKey((w && w.date) || new Date(s.ts).toISOString().slice(0, 10)); }
+function setsFor(exId, person, scheme) {
+  return DB.Sets.filter(s => s.exerciseId === exId && s.person === person && !s.deleted
+      && (scheme === undefined || Number(s.scheme) === Number(scheme)))
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+function bestVolumeSession(exId, person, scheme) {
+  const arr = setsFor(exId, person, scheme);
+  const byDate = {};
+  arr.forEach(s => { const d = workoutDate(s); (byDate[d] = byDate[d] || []).push(s); });
+  let best = null;
+  Object.keys(byDate).forEach(d => {
+    const grp = byDate[d];
+    const vol = grp.reduce((t, s) => t + Number(s.weight) * Number(s.reps), 0);
+    if (!best || vol > best.vol) {
+      const top = grp.reduce((a, b) => Number(b.weight) > Number(a.weight) ? b : a);
+      best = { date: d, sets: grp.length, vol: vol, topW: top.weight, topR: top.reps };
+    }
+  });
+  return best;
+}
+function personHeader(p) {
+  const pl = p.toLowerCase();
+  return el('div', { html: '<span class="pdot dot-' + pl + '">●</span><b class="dot-' + pl + '">' + p + '</b>' });
+}
+
+// ---- History (the headline of the Progress tab) ----
+function renderHistory() {
+  const box = $('#historyBox'); box.innerHTML = '';
+  const exr = exById(UI.dashExerciseId);
+  if (!exr) { box.appendChild(el('div', { class: 'empty', text: 'No exercise selected.' })); return; }
+  if (exr.weightType === 'sprint') { box.appendChild(sprintHistoryCard(exr)); return; }
+  [[5, 'Heavy · 5 reps'], [15, 'Light · 15 reps']].forEach(s => box.appendChild(historyCard(exr, s[0], s[1])));
+}
+function historyCard(exr, scheme, label) {
+  const card = el('div', { class: 'card' });
+  card.appendChild(el('strong', { text: label }));
+  PEOPLE.forEach(p => {
+    const arr = setsFor(exr.id, p, scheme);
+    const last = arr[arr.length - 1];
+    const best = bestVolumeSession(exr.id, p, scheme);
+    const block = el('div', { class: 'exrow' }, [el('div', { class: 'grow' }, [personHeader(p)])]);
+    const info = block.firstChild;
+    info.appendChild(last
+      ? el('div', { class: 'small', html: 'Last: <b>' + fmtNum(last.weight) + '</b> kg × ' + last.reps + ' <span class="muted tiny">' + fmtDate(workoutDate(last)) + '</span>' })
+      : el('div', { class: 'small muted', text: 'No ' + (scheme === 5 ? 'heavy' : 'light') + ' sets yet' }));
+    if (best) info.appendChild(el('div', { class: 'small muted', html:
+      'Best volume: <b>' + best.sets + '</b> set' + (best.sets > 1 ? 's' : '') + ' · top ' + fmtNum(best.topW) + ' kg × ' + best.topR + ' · ' + best.vol.toLocaleString() + ' kg <span class="tiny">' + fmtDate(best.date) + '</span>' }));
+    card.appendChild(block);
+  });
+  return card;
+}
+function sprintHistoryCard(exr) {
+  const card = el('div', { class: 'card' });
+  card.appendChild(el('strong', { text: 'Sprints' }));
+  PEOPLE.forEach(p => {
+    const arr = setsFor(exr.id, p);
+    const last = arr[arr.length - 1];
+    const byDate = {};
+    arr.forEach(s => { const d = workoutDate(s); (byDate[d] = byDate[d] || []).push(s); });
+    let best = null;
+    Object.keys(byDate).forEach(d => {
+      const grp = byDate[d];
+      const secs = grp.reduce((t, s) => t + Number(s.number) * Number(s.duration), 0);
+      if (!best || secs > best.secs) best = { date: d, secs: secs, sets: grp.length };
+    });
+    const block = el('div', { class: 'exrow' }, [el('div', { class: 'grow' }, [personHeader(p)])]);
+    const info = block.firstChild;
+    info.appendChild(last
+      ? el('div', { class: 'small', html: 'Last: <b>' + fmtNum(last.number) + '</b> × ' + fmtNum(last.duration) + 's, ' + fmtNum(last.rest) + 's rest <span class="muted tiny">' + fmtDate(workoutDate(last)) + '</span>' })
+      : el('div', { class: 'small muted', text: 'No sprints yet' }));
+    if (best) info.appendChild(el('div', { class: 'small muted', html:
+      'Best: <b>' + best.secs + 's</b> total over ' + best.sets + ' set' + (best.sets > 1 ? 's' : '') + ' <span class="tiny">' + fmtDate(best.date) + '</span>' }));
+    card.appendChild(block);
+  });
+  return card;
+}
+function drawVolChart() {
+  const exr = exById(UI.dashExerciseId);
   if (charts.vol) { charts.vol.destroy(); charts.vol = null; }
-  $('#prCards').innerHTML = '';
   if (!exr) return;
-
-  // collect sets for this exercise (optionally filtered by scheme)
-  let sets = DB.Sets.filter(s => s.exerciseId === exr.id && !s.deleted);
-  if (UI.dashScheme !== 'all') sets = sets.filter(s => Number(s.scheme) === Number(UI.dashScheme));
-
-  // group by date+person -> best e1rm of the day (or assistance for inverted, or sprint time)
-  const inverted = !!exr.inverted;
   const sprint = exr.weightType === 'sprint';
-  title.textContent = sprint ? 'Total sprint time' : (inverted ? 'Assistance weight' : 'Estimated 1RM');
-  note.textContent = sprint ? 'sprints × duration (sec)' : (inverted ? 'lower = stronger' : 'Epley · combines 5s & 15s');
-
-  const dayMap = {}; // date -> {Neil:bestVal, Simon:bestVal}
-  const volMap = {}; // date -> {Neil:vol, Simon:vol}
+  let sets = DB.Sets.filter(s => s.exerciseId === exr.id && !s.deleted);
+  if (!sprint && UI.dashScheme !== 'all') sets = sets.filter(s => Number(s.scheme) === Number(UI.dashScheme));
+  const volMap = {};
   sets.forEach(s => {
-    const w = workoutById(s.workoutId); const date = dateKey((w && w.date) || new Date(s.ts).toISOString().slice(0, 10));
-    const metric = sprint ? (Number(s.number) || 0) * (Number(s.duration) || 0)
-                          : (inverted ? Number(s.weight) : e1rm(s.weight, s.reps));
-    dayMap[date] = dayMap[date] || {};
-    if (dayMap[date][s.person] === undefined) dayMap[date][s.person] = metric;
-    else if (sprint) dayMap[date][s.person] += metric;
-    else dayMap[date][s.person] = inverted ? Math.min(dayMap[date][s.person], metric) : Math.max(dayMap[date][s.person], metric);
-    const vol = sprint ? (Number(s.number) || 0) : Number(s.weight) * Number(s.reps);
-    volMap[date] = volMap[date] || {};
-    volMap[date][s.person] = (volMap[date][s.person] || 0) + vol;
+    const d = workoutDate(s);
+    const vol = sprint ? (Number(s.number) || 0) * (Number(s.duration) || 0) : Number(s.weight) * Number(s.reps);
+    volMap[d] = volMap[d] || {};
+    volMap[d][s.person] = (volMap[d][s.person] || 0) + vol;
   });
-  const dates = Object.keys(dayMap).concat(Object.keys(volMap)).filter((v, i, a) => a.indexOf(v) === i).sort();
-
-  const colors = { Neil: getCss('--neil'), Simon: getCss('--simon') };
+  const dates = Object.keys(volMap).sort();
   const labels = dates.map(d => fmtDate(d));
-
-  charts.main = new Chart($('#chartMain'), {
-    type: 'line',
-    data: { labels, datasets: PEOPLE.map(p => ({
-      label: p, borderColor: colors[p], backgroundColor: colors[p],
-      spanGaps: true, tension: .25, pointRadius: 3,
-      data: dates.map(d => dayMap[d] && dayMap[d][p] !== undefined ? Math.round(dayMap[d][p] * 10) / 10 : null),
-    })) },
-    options: lineOpts(),
-  });
+  const colors = { Neil: getCss('--neil'), Simon: getCss('--simon') };
   charts.vol = new Chart($('#chartVol'), {
     type: 'bar',
     data: { labels, datasets: PEOPLE.map(p => ({
@@ -935,33 +978,6 @@ function drawDashCharts() {
       data: dates.map(d => volMap[d] && volMap[d][p] !== undefined ? Math.round(volMap[d][p]) : null),
     })) },
     options: lineOpts(),
-  });
-
-  // PR cards
-  PEOPLE.forEach(p => {
-    const ps = sets.filter(s => s.person === p);
-    let label, val, sub;
-    if (!ps.length) { label = '—'; val = '–'; sub = 'no data'; }
-    else if (sprint) {
-      const sessions = dates.map(d => dayMap[d] && dayMap[d][p]).filter(x => x !== undefined);
-      const bestDur = ps.reduce((a, b) => (Number(b.duration) || 0) > (Number(a.duration) || 0) ? b : a);
-      label = 'Best session'; val = (sessions.length ? Math.max.apply(null, sessions) : 0) + ' s';
-      sub = 'longest sprint ' + fmtNum(bestDur.duration) + 's';
-    }
-    else if (inverted) {
-      const best = ps.reduce((a, b) => Number(b.weight) < Number(a.weight) ? b : a);
-      label = 'Lowest assist'; val = fmtNum(best.weight) + ' kg'; sub = best.reps + ' reps';
-    } else {
-      const bestW = ps.reduce((a, b) => Number(b.weight) > Number(a.weight) ? b : a);
-      const best1 = ps.reduce((a, b) => e1rm(b.weight, b.reps) > e1rm(a.weight, a.reps) ? b : a);
-      label = 'Top weight'; val = fmtNum(bestW.weight) + ' kg'; sub = 'best e1RM ~' + Math.round(e1rm(best1.weight, best1.reps)) + ' kg';
-    }
-    $('#prCards').appendChild(el('div', { class: 'card kpi' }, [
-      el('div', { class: 'small dot-' + p.toLowerCase(), html: '● ' + p }),
-      el('div', { class: 'tiny muted', text: label }),
-      el('div', { class: 'big', text: val }),
-      el('div', { class: 'tiny muted', text: sub }),
-    ]));
   });
 }
 function getCss(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
@@ -1079,8 +1095,8 @@ $all('nav.tabs button').forEach(b => b.addEventListener('click', () => switchTab
 $('#btnNewWorkout').addEventListener('click', () => newWorkoutModal());
 $('#btnNewExercise').addEventListener('click', () => exerciseModal());
 $('#btnSettings').addEventListener('click', settingsModal);
-$('#dashExercise').addEventListener('change', e => { UI.dashExerciseId = e.target.value; drawDashCharts(); });
-$all('#dashScheme button').forEach(b => b.addEventListener('click', () => { UI.dashScheme = b.dataset.s; $all('#dashScheme button').forEach(x => x.classList.toggle('on', x === b)); drawDashCharts(); }));
+$('#dashExercise').addEventListener('change', e => { UI.dashExerciseId = e.target.value; renderProgress(); });
+$all('#dashScheme button').forEach(b => b.addEventListener('click', () => { UI.dashScheme = b.dataset.s; $all('#dashScheme button').forEach(x => x.classList.toggle('on', x === b)); drawVolChart(); }));
 window.addEventListener('online', () => { setSync('pending'); syncNow(); });
 window.addEventListener('offline', () => setSync('err', 'Offline'));
 
