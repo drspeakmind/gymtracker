@@ -883,20 +883,18 @@ function setsFor(exId, person, scheme) {
       && (scheme === undefined || Number(s.scheme) === Number(scheme)))
     .sort((a, b) => (a.ts || 0) - (b.ts || 0));
 }
-function bestVolumeSession(exId, person, scheme) {
-  const arr = setsFor(exId, person, scheme);
+function sessionsByDate(exId, person, scheme) {
   const byDate = {};
-  arr.forEach(s => { const d = workoutDate(s); (byDate[d] = byDate[d] || []).push(s); });
-  let best = null;
-  Object.keys(byDate).forEach(d => {
-    const grp = byDate[d];
-    const vol = grp.reduce((t, s) => t + Number(s.weight) * Number(s.reps), 0);
-    if (!best || vol > best.vol) {
-      const top = grp.reduce((a, b) => Number(b.weight) > Number(a.weight) ? b : a);
-      best = { date: d, sets: grp.length, vol: vol, topW: top.weight, topR: top.reps };
-    }
-  });
-  return best;
+  setsFor(exId, person, scheme).forEach(s => { const d = workoutDate(s); (byDate[d] = byDate[d] || []).push(s); });
+  return byDate;
+}
+function volOf(grp) { return grp.reduce((t, s) => t + Number(s.weight) * Number(s.reps), 0); }
+function secsOf(grp) { return grp.reduce((t, s) => t + Number(s.number) * Number(s.duration), 0); }
+// full session breakdown, e.g. "100×5  /  100×5  /  100×5"
+function setListHtml(grp, sprint) {
+  return grp.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)).map(s => sprint
+    ? ('<b>' + fmtNum(s.number) + '</b>×' + fmtNum(s.duration) + 's')
+    : ('<b>' + fmtNum(s.weight) + '</b>×' + s.reps)).join('  /  ');
 }
 function personHeader(p) {
   const pl = p.toLowerCase();
@@ -911,47 +909,39 @@ function renderHistory() {
   if (exr.weightType === 'sprint') { box.appendChild(sprintHistoryCard(exr)); return; }
   [[5, 'Heavy · 5 reps'], [15, 'Light · 15 reps']].forEach(s => box.appendChild(historyCard(exr, s[0], s[1])));
 }
+function historyBlock(p, byDate, opts) {
+  const block = el('div', { class: 'exrow' }, [el('div', { class: 'grow' }, [personHeader(p)])]);
+  const info = block.firstChild;
+  const dates = Object.keys(byDate);
+  if (!dates.length) { info.appendChild(el('div', { class: 'small muted', text: opts.empty })); return block; }
+  const lastDate = dates.slice().sort()[dates.length - 1];
+  let bestDate = dates[0];
+  dates.forEach(d => { if (opts.score(byDate[d]) > opts.score(byDate[bestDate])) bestDate = d; });
+  info.appendChild(el('div', { class: 'small', html:
+    '<span class="muted">Last</span> <span class="muted tiny">' + fmtDate(lastDate) + '</span><br>' + setListHtml(byDate[lastDate], opts.sprint) }));
+  info.appendChild(el('div', { class: 'small', style: 'margin-top:5px', html:
+    '<span class="muted">Best</span> <span class="muted tiny">' + fmtDate(bestDate) + ' · ' + opts.bestNote(byDate[bestDate]) + '</span><br>' + setListHtml(byDate[bestDate], opts.sprint) }));
+  return block;
+}
 function historyCard(exr, scheme, label) {
   const card = el('div', { class: 'card' });
   card.appendChild(el('strong', { text: label }));
-  PEOPLE.forEach(p => {
-    const arr = setsFor(exr.id, p, scheme);
-    const last = arr[arr.length - 1];
-    const best = bestVolumeSession(exr.id, p, scheme);
-    const block = el('div', { class: 'exrow' }, [el('div', { class: 'grow' }, [personHeader(p)])]);
-    const info = block.firstChild;
-    info.appendChild(last
-      ? el('div', { class: 'small', html: 'Last: <b>' + fmtNum(last.weight) + '</b> kg × ' + last.reps + ' <span class="muted tiny">' + fmtDate(workoutDate(last)) + '</span>' })
-      : el('div', { class: 'small muted', text: 'No ' + (scheme === 5 ? 'heavy' : 'light') + ' sets yet' }));
-    if (best) info.appendChild(el('div', { class: 'small muted', html:
-      'Best volume: <b>' + best.sets + '</b> set' + (best.sets > 1 ? 's' : '') + ' · top ' + fmtNum(best.topW) + ' kg × ' + best.topR + ' · ' + best.vol.toLocaleString() + ' kg <span class="tiny">' + fmtDate(best.date) + '</span>' }));
-    card.appendChild(block);
-  });
+  PEOPLE.forEach(p => card.appendChild(historyBlock(p, sessionsByDate(exr.id, p, scheme), {
+    empty: 'No ' + (scheme === 5 ? 'heavy' : 'light') + ' sets yet',
+    score: volOf,
+    bestNote: grp => volOf(grp).toLocaleString() + ' kg',
+  })));
   return card;
 }
 function sprintHistoryCard(exr) {
   const card = el('div', { class: 'card' });
   card.appendChild(el('strong', { text: 'Sprints' }));
-  PEOPLE.forEach(p => {
-    const arr = setsFor(exr.id, p);
-    const last = arr[arr.length - 1];
-    const byDate = {};
-    arr.forEach(s => { const d = workoutDate(s); (byDate[d] = byDate[d] || []).push(s); });
-    let best = null;
-    Object.keys(byDate).forEach(d => {
-      const grp = byDate[d];
-      const secs = grp.reduce((t, s) => t + Number(s.number) * Number(s.duration), 0);
-      if (!best || secs > best.secs) best = { date: d, secs: secs, sets: grp.length };
-    });
-    const block = el('div', { class: 'exrow' }, [el('div', { class: 'grow' }, [personHeader(p)])]);
-    const info = block.firstChild;
-    info.appendChild(last
-      ? el('div', { class: 'small', html: 'Last: <b>' + fmtNum(last.number) + '</b> × ' + fmtNum(last.duration) + 's, ' + fmtNum(last.rest) + 's rest <span class="muted tiny">' + fmtDate(workoutDate(last)) + '</span>' })
-      : el('div', { class: 'small muted', text: 'No sprints yet' }));
-    if (best) info.appendChild(el('div', { class: 'small muted', html:
-      'Best: <b>' + best.secs + 's</b> total over ' + best.sets + ' set' + (best.sets > 1 ? 's' : '') + ' <span class="tiny">' + fmtDate(best.date) + '</span>' }));
-    card.appendChild(block);
-  });
+  PEOPLE.forEach(p => card.appendChild(historyBlock(p, sessionsByDate(exr.id, p), {
+    empty: 'No sprints yet',
+    sprint: true,
+    score: secsOf,
+    bestNote: grp => secsOf(grp) + 's total',
+  })));
   return card;
 }
 function drawVolChart() {
@@ -972,9 +962,10 @@ function drawVolChart() {
   const labels = dates.map(d => fmtDate(d));
   const colors = { Neil: getCss('--neil'), Simon: getCss('--simon') };
   charts.vol = new Chart($('#chartVol'), {
-    type: 'bar',
+    type: 'line',
     data: { labels, datasets: PEOPLE.map(p => ({
-      label: p, backgroundColor: colors[p],
+      label: p, borderColor: colors[p], backgroundColor: colors[p],
+      spanGaps: true, tension: .25, pointRadius: 3,
       data: dates.map(d => volMap[d] && volMap[d][p] !== undefined ? Math.round(volMap[d][p]) : null),
     })) },
     options: lineOpts(),

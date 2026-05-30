@@ -1,6 +1,6 @@
 /* Gym Tracker service worker — caches the app shell so it opens with no signal.
    Bump CACHE whenever you change the cached files to force a refresh. */
-const CACHE = 'gym-v7';
+const CACHE = 'gym-v8';
 const CORE = [
   './',
   './index.html',
