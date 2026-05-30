@@ -18,6 +18,13 @@ var TABLES = {
   Sets:      ['id', 'workoutId', 'exerciseId', 'person', 'scheme', 'weight', 'reps', 'ts', 'updated']
 };
 
+// Wraps any object as a JSON HTTP response.
+function json(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
 function doGet(e) {
   return json(getAll_());
 }
