@@ -66,7 +66,10 @@ three steps on his phone with the same URL.
   weight + reps. *Same for both* writes Neil's and Simon's set in one tap;
   *Log separately* when you differ. Weight input adapts per exercise: plates step
   2.5 kg, machines have +1.1 / +2.3 kg micro-plate buttons, dumbbells/kettlebells
-  are size pickers. Last-used weight pre-fills.
+  are size pickers. Last-used weight pre-fills (per scheme — heavy and light are
+  remembered separately). **Sprints** are a special type: instead of weight × reps
+  you log **duration / rest / number** (presets + manual). Each exercise card also
+  has a 🗑 to remove it from the session, and *Duplicate last* to repeat a set.
 - **Progress** — pick an exercise. The top chart is **estimated 1RM** (Epley),
   which puts 5-rep and 15-rep sets on one comparable strength line for both of
   you; below is **volume** per session; then **personal-record** cards. Filter by

@@ -236,6 +236,7 @@ const SCHEMES = { 5: 'Heavy 5', 15: 'Light 15' };
 const DUMBBELLS = [2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50];
 const KETTLEBELLS = [4,6,8,12,16,20,24,28,32,36,40];
 const MACHINE_ADDONS = [1.1, 2.3]; // micro plates you can add to a stack
+const SPRINT_DEFAULTS = { duration: [10, 15, 20], rest: [20, 30, 45], number: [3, 4, 6, 8] };
 
 // Seed library (used only when the database is empty)
 const SEED_EXERCISES = [
@@ -286,13 +287,22 @@ function el(tag, attrs, kids) {
 }
 function fmtNum(n) { n = Number(n) || 0; return Number.isInteger(n) ? String(n) : n.toFixed(n % 1 === 0 ? 0 : (n * 10 % 1 === 0 ? 1 : 2)); }
 function todayISO() { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
-function fmtDate(iso) {
-  if (!iso) return '';
-  const d = new Date(iso + 'T00:00:00');
-  if (isNaN(d)) return iso;
-  const t = todayISO();
-  if (iso === t) return 'Today';
-  return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+// Normalise any date (a clean 'YYYY-MM-DD', or a full ISO timestamp that the
+// Google Sheet round-trip can produce) down to a local 'YYYY-MM-DD' key.
+function dateKey(d) {
+  if (!d) return '';
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const dt = new Date(d);
+  if (isNaN(dt)) return String(d);
+  return new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+function fmtDate(d) {
+  const key = dateKey(d);
+  if (!key) return '';
+  if (key === todayISO()) return 'Today';
+  const dt = new Date(key + 'T00:00:00');
+  if (isNaN(dt)) return key;
+  return dt.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
 }
 function exById(id) { return DB.Exercises.find(e => e.id === id); }
 function workoutById(id) { return DB.Workouts.find(w => w.id === id); }
@@ -430,8 +440,9 @@ function mergeServer(server) {
 }
 function coerceRow(table, r) {
   const o = Object.assign({}, r);
-  ['step','weight','reps','scheme','sortOrder','updated','ts'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
+  ['step','weight','reps','scheme','sortOrder','updated','ts','duration','rest','number'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
   ['inverted','archived','deleted'].forEach(k => { if (typeof o[k] === 'string') o[k] = (o[k] === 'true' || o[k] === 'TRUE'); });
+  if (table === 'Workouts' && o.date) o.date = dateKey(o.date);
   return o;
 }
 
@@ -471,6 +482,14 @@ function renderPlan() {
         el('span', { class: 'spacer' }),
         el('span', { class: 'pill ' + (w.type === 'together' ? 'together' : 'solo'), text: w.type === 'together' ? 'Neil + Simon' : (w.participants || 'Solo') }),
         el('span', { class: 'pill ' + (w.status === 'done' ? 'done' : 'planned'), text: w.status === 'done' ? 'done' : 'planned' }),
+        el('button', { class: 'iconbtn', style: 'width:30px;height:30px;font-size:13px', html: '🗑', title: 'Delete workout', onclick: (ev) => {
+          ev.stopPropagation();
+          if (!confirm('Delete this workout' + (sets.length ? ' and its ' + sets.length + ' logged set(s)' : '') + '?')) return;
+          w.deleted = true; upsert('Workouts', w);
+          sets.forEach(s => { s.deleted = true; upsert('Sets', s); });
+          if (CFG.activeWorkoutId === w.id) { CFG.activeWorkoutId = null; save(); }
+          renderPlan(); toast('Workout deleted');
+        } }),
       ]),
       el('div', { class: 'small muted', style: 'margin-top:6px',
         text: sets.length ? (exCount + ' exercise' + (exCount === 1 ? '' : 's') + ' · ' + sets.length + ' sets logged')
@@ -508,16 +527,26 @@ function renderLog() {
     w.notes ? el('div', { class: 'small muted', style: 'margin-top:8px', text: '📝 ' + w.notes }) : el('span'),
   ]));
 
-  // exercises in this workout (planned order, then any with sets)
+  // exercises in this workout, most-recently-added first so the one you're
+  // currently filling out sits at the top
   const order = (w.plannedEx || []).slice();
   setsForWorkout(w.id).forEach(s => { if (!order.includes(s.exerciseId)) order.push(s.exerciseId); });
+  order.reverse();
 
-  if (!order.length) body.appendChild(el('div', { class: 'empty', text: 'No exercises yet — add one below.' }));
+  // action buttons sit directly under the current exercise; finished ones drop below
+  const actions = el('div', {}, [
+    el('button', { class: 'btn block ghost', text: '+ Add exercise to session', onclick: () => addExerciseToWorkout(w) }),
+    el('button', { class: 'btn block', style: 'margin-top:10px', text: '📝 Edit details / notes', onclick: () => newWorkoutModal(w) }),
+  ]);
 
-  order.forEach(exId => body.appendChild(exerciseLogCard(w, exId)));
-
-  body.appendChild(el('button', { class: 'btn block ghost', text: '+ Add exercise to session', onclick: () => addExerciseToWorkout(w) }));
-  body.appendChild(el('button', { class: 'btn block', style: 'margin-top:10px', text: '📝 Edit details / notes', onclick: () => newWorkoutModal(w) }));
+  if (!order.length) {
+    body.appendChild(el('div', { class: 'empty', text: 'No exercises yet — add one below.' }));
+    body.appendChild(actions);
+  } else {
+    body.appendChild(exerciseLogCard(w, order[0]));        // current exercise, on top
+    body.appendChild(actions);                             // + add / edit, right beneath
+    order.slice(1).forEach(exId => body.appendChild(exerciseLogCard(w, exId))); // completed, below
+  }
 }
 
 function exerciseLogCard(w, exId) {
@@ -548,8 +577,13 @@ function exerciseLogCard(w, exId) {
     PEOPLE.forEach(p => {
       const s = grp.find(x => x.person === p);
       const pl = p.toLowerCase();
-      if (s) line.appendChild(el('span', { class: 'grow', html:
-        '<span class="pdot dot-' + pl + '">●</span><b class="dot-' + pl + '">' + p + '</b> <b>' + fmtNum(s.weight) + '</b><span class="muted tiny">kg</span> × ' + s.reps }));
+      if (s) {
+        const detail = exercise.weightType === 'sprint'
+          ? ('<b>' + fmtNum(s.number) + '</b> × <b>' + fmtNum(s.duration) + 's</b> <span class="muted tiny">' + fmtNum(s.rest) + 's rest</span>')
+          : ('<b>' + fmtNum(s.weight) + '</b><span class="muted tiny">kg</span> × ' + s.reps);
+        line.appendChild(el('span', { class: 'grow', html:
+          '<span class="pdot dot-' + pl + '">●</span><b class="dot-' + pl + '">' + p + '</b> ' + detail }));
+      }
     });
     line.appendChild(el('button', { class: 'iconbtn', style: 'width:32px;height:32px;font-size:14px', html: '✕', title: 'Delete set', onclick: () => { grp.forEach(s => { s.deleted = true; upsert('Sets', s); }); renderLog(); } }));
     card.appendChild(line);
@@ -567,7 +601,8 @@ function exerciseLogCard(w, exId) {
 function duplicateSet(w, exercise, grp) {
   const ts = Date.now();
   grp.forEach(s => upsert('Sets', { id: uid(), workoutId: w.id, exerciseId: exercise.id, person: s.person,
-    scheme: s.scheme, weight: s.weight, reps: s.reps, ts, deleted: false, updated: 0 }));
+    scheme: s.scheme, weight: s.weight, reps: s.reps, duration: s.duration, rest: s.rest, number: s.number,
+    ts, deleted: false, updated: 0 }));
   renderLog(); toast('Set duplicated');
 }
 
@@ -583,6 +618,7 @@ function lastSet(exId, person, scheme) {
 function addSetModal(w, exercise) {
   const solo = w.type !== 'together';
   const soloPerson = solo ? (w.participants || 'Neil') : null;
+  const isSprint = exercise.weightType === 'sprint';
   const prev = lastSet(exercise.id, 'Neil') || lastSet(exercise.id, 'Simon');
   let scheme = prev ? Number(prev.scheme) : 5;
   let split = false;
@@ -593,6 +629,11 @@ function addSetModal(w, exercise) {
   };
   function pickStart(exr, p) {
     const other = p === 'Neil' ? 'Simon' : 'Neil';
+    if (isSprint) {
+      const ls = lastSet(exr.id, p) || lastSet(exr.id, other);
+      return ls ? { duration: Number(ls.duration) || 15, rest: Number(ls.rest) || 30, number: Number(ls.number) || 4 }
+                : { duration: 15, rest: 30, number: 4 };
+    }
     // prefer the last time at THIS scheme (heavy/light differ a lot), then any history
     const ls = lastSet(exr.id, p, scheme) || lastSet(exr.id, other, scheme)
             || lastSet(exr.id, p) || lastSet(exr.id, other);
@@ -602,10 +643,10 @@ function addSetModal(w, exercise) {
   const m = $('#modal');
   function draw() {
     m.innerHTML = '';
-    m.appendChild(el('h3', { text: 'Add set · ' + exercise.name }));
+    m.appendChild(el('h3', { text: (isSprint ? 'Add sprints · ' : 'Add set · ') + exercise.name }));
 
-    // scheme
-    m.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:14px' }, [5, 15].map(s =>
+    // scheme (heavy/light) — not relevant for sprints
+    if (!isSprint) m.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:14px' }, [5, 15].map(s =>
       el('button', { class: scheme === s ? 'on' : '', text: SCHEMES[s], onclick: () => { scheme = s; vals.Neil = pickStart(exercise, 'Neil'); vals.Simon = pickStart(exercise, 'Simon'); draw(); } })
     )));
 
@@ -633,6 +674,15 @@ function addSetModal(w, exercise) {
     m.appendChild(actions);
   }
 
+  // preset chips + manual stepper, used for sprint duration/rest/number
+  function chipStepper(v, key, presets, unit, step) {
+    const box = el('div');
+    box.appendChild(el('div', { class: 'seg fill', style: 'flex-wrap:wrap;margin-bottom:6px' },
+      presets.map(p => el('button', { class: (Number(v[key]) === p ? 'on' : ''), text: p + unit, onclick: () => { v[key] = p; draw(); } }))));
+    box.appendChild(stepperControl(v, key, step, 1));
+    return box;
+  }
+
   function personEntry(exr, person, v, labelled) {
     const wrap = el('div', { class: 'card', style: 'background:var(--panel2)' });
     if (labelled && person) wrap.appendChild(el('div', { class: 'row', style: 'margin-bottom:8px' }, [
@@ -640,18 +690,29 @@ function addSetModal(w, exercise) {
     else if (person) wrap.appendChild(el('div', { class: 'small muted', style: 'margin-bottom:8px', text: person }));
     else wrap.appendChild(el('div', { class: 'small muted', style: 'margin-bottom:8px', text: 'Neil + Simon (same)' }));
 
-    wrap.appendChild(el('div', { class: 'small muted', text: 'Weight (kg)' }));
-    wrap.appendChild(weightControl(exr, v));
-    wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: 'Reps' }));
-    wrap.appendChild(stepperControl(v, 'reps', 1, 0));
+    if (isSprint) {
+      wrap.appendChild(el('div', { class: 'small muted', text: 'Duration (sec)' }));
+      wrap.appendChild(chipStepper(v, 'duration', SPRINT_DEFAULTS.duration, 's', 5));
+      wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: 'Rest (sec)' }));
+      wrap.appendChild(chipStepper(v, 'rest', SPRINT_DEFAULTS.rest, 's', 5));
+      wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: 'Number of sprints' }));
+      wrap.appendChild(chipStepper(v, 'number', SPRINT_DEFAULTS.number, '', 1));
+    } else {
+      wrap.appendChild(el('div', { class: 'small muted', text: 'Weight (kg)' }));
+      wrap.appendChild(weightControl(exr, v));
+      wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: 'Reps' }));
+      wrap.appendChild(stepperControl(v, 'reps', 1, 0));
+    }
     return wrap;
   }
 
   function doSave() {
     const ts = Date.now();
     function makeSet(person, v) {
-      return { id: uid(), workoutId: w.id, exerciseId: exercise.id, person, scheme,
-        weight: round2(v.weight), reps: Math.round(v.reps), ts, deleted: false, updated: 0 };
+      const base = { id: uid(), workoutId: w.id, exerciseId: exercise.id, person, ts, deleted: false, updated: 0 };
+      if (isSprint) return Object.assign(base, { scheme: '', weight: 0, reps: 0,
+        duration: Math.round(v.duration), rest: Math.round(v.rest), number: Math.round(v.number) });
+      return Object.assign(base, { scheme, weight: round2(v.weight), reps: Math.round(v.reps) });
     }
     let toAdd = [];
     if (solo) toAdd = [makeSet(soloPerson, vals[soloPerson])];
@@ -816,20 +877,23 @@ function drawDashCharts() {
   let sets = DB.Sets.filter(s => s.exerciseId === exr.id && !s.deleted);
   if (UI.dashScheme !== 'all') sets = sets.filter(s => Number(s.scheme) === Number(UI.dashScheme));
 
-  // group by date+person -> best e1rm of the day (or assistance for inverted)
+  // group by date+person -> best e1rm of the day (or assistance for inverted, or sprint time)
   const inverted = !!exr.inverted;
-  title.textContent = inverted ? 'Assistance weight' : 'Estimated 1RM';
-  note.textContent = inverted ? 'lower = stronger' : 'Epley · combines 5s & 15s';
+  const sprint = exr.weightType === 'sprint';
+  title.textContent = sprint ? 'Total sprint time' : (inverted ? 'Assistance weight' : 'Estimated 1RM');
+  note.textContent = sprint ? 'sprints × duration (sec)' : (inverted ? 'lower = stronger' : 'Epley · combines 5s & 15s');
 
   const dayMap = {}; // date -> {Neil:bestVal, Simon:bestVal}
   const volMap = {}; // date -> {Neil:vol, Simon:vol}
   sets.forEach(s => {
-    const w = workoutById(s.workoutId); const date = (w && w.date) || (new Date(s.ts).toISOString().slice(0, 10));
-    const metric = inverted ? Number(s.weight) : e1rm(s.weight, s.reps);
+    const w = workoutById(s.workoutId); const date = dateKey((w && w.date) || new Date(s.ts).toISOString().slice(0, 10));
+    const metric = sprint ? (Number(s.number) || 0) * (Number(s.duration) || 0)
+                          : (inverted ? Number(s.weight) : e1rm(s.weight, s.reps));
     dayMap[date] = dayMap[date] || {};
     if (dayMap[date][s.person] === undefined) dayMap[date][s.person] = metric;
+    else if (sprint) dayMap[date][s.person] += metric;
     else dayMap[date][s.person] = inverted ? Math.min(dayMap[date][s.person], metric) : Math.max(dayMap[date][s.person], metric);
-    const vol = Number(s.weight) * Number(s.reps);
+    const vol = sprint ? (Number(s.number) || 0) : Number(s.weight) * Number(s.reps);
     volMap[date] = volMap[date] || {};
     volMap[date][s.person] = (volMap[date][s.person] || 0) + vol;
   });
@@ -861,6 +925,12 @@ function drawDashCharts() {
     const ps = sets.filter(s => s.person === p);
     let label, val, sub;
     if (!ps.length) { label = '—'; val = '–'; sub = 'no data'; }
+    else if (sprint) {
+      const sessions = dates.map(d => dayMap[d] && dayMap[d][p]).filter(x => x !== undefined);
+      const bestDur = ps.reduce((a, b) => (Number(b.duration) || 0) > (Number(a.duration) || 0) ? b : a);
+      label = 'Best session'; val = (sessions.length ? Math.max.apply(null, sessions) : 0) + ' s';
+      sub = 'longest sprint ' + fmtNum(bestDur.duration) + 's';
+    }
     else if (inverted) {
       const best = ps.reduce((a, b) => Number(b.weight) < Number(a.weight) ? b : a);
       label = 'Lowest assist'; val = fmtNum(best.weight) + ' kg'; sub = best.reps + ' reps';
@@ -921,23 +991,29 @@ function exerciseModal(existing, onCreate) {
   const name = el('input', { type: 'text', placeholder: 'e.g. Cable row', value: e.name });
   m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Name' }), name]));
 
-  const cats = ['Chest', 'Back', 'Shoulders', 'Arms', 'Legs', 'Core', 'Other'];
+  const cats = ['Chest', 'Back', 'Shoulders', 'Arms', 'Legs', 'Core', 'Cardio', 'Other'];
   const catSel = el('select', {}, cats.map(c => el('option', { value: c, text: c }))); catSel.value = e.category || 'Chest';
   m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Category' }), catSel]));
 
-  const types = [['plate', 'Plate-loaded / barbell (±2.5 kg)'], ['machine', 'Machine stack (+micro plates)'], ['dumbbell', 'Dumbbell singles'], ['kettlebell', 'Kettlebell']];
+  const types = [['plate', 'Plate-loaded / barbell (±2.5 kg)'], ['machine', 'Machine stack (+micro plates)'], ['dumbbell', 'Dumbbell singles'], ['kettlebell', 'Kettlebell'], ['sprint', 'Sprints (duration / rest / number)']];
   const typeSel = el('select', {}, types.map(t => el('option', { value: t[0], text: t[1] }))); typeSel.value = e.weightType;
-  m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Weight type' }), typeSel]));
+  m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Type' }), typeSel]));
 
   const step = el('input', { type: 'number', value: e.step, step: 0.25, inputmode: 'decimal' });
   const stepField = el('label', { class: 'field' }, [el('span', { text: '± step for + / − buttons (kg)' }), step]);
   m.appendChild(stepField);
-  function syncStepVis() { stepField.style.display = (typeSel.value === 'plate' || typeSel.value === 'machine') ? '' : 'none'; }
-  typeSel.addEventListener('change', syncStepVis); syncStepVis();
 
   let inverted = !!e.inverted;
   const invBtn = el('button', { class: 'btn sm ' + (inverted ? '' : 'ghost'), text: inverted ? 'Inverted: ON' : 'Inverted: off', onclick: () => { inverted = !inverted; invBtn.textContent = inverted ? 'Inverted: ON' : 'Inverted: off'; invBtn.className = 'btn sm ' + (inverted ? '' : 'ghost'); } });
-  m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Inverted (more weight = easier, e.g. assisted pull-ups)' }), invBtn]));
+  const invField = el('label', { class: 'field' }, [el('span', { text: 'Inverted (more weight = easier, e.g. assisted pull-ups)' }), invBtn]);
+  m.appendChild(invField);
+
+  // show only the fields that make sense for the chosen type
+  function syncTypeVis() {
+    stepField.style.display = (typeSel.value === 'plate' || typeSel.value === 'machine') ? '' : 'none';
+    invField.style.display = (typeSel.value === 'sprint') ? 'none' : '';
+  }
+  typeSel.addEventListener('change', syncTypeVis); syncTypeVis();
 
   const actions = el('div', { class: 'row', style: 'gap:10px;margin-top:6px' });
   if (existing) actions.appendChild(el('button', { class: 'btn danger sm', text: e.archived ? 'Unarchive' : 'Archive', onclick: () => { e.archived = !e.archived; upsert('Exercises', e); closeModal(); renderExercises(); } }));
