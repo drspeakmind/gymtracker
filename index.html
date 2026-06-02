@@ -314,8 +314,13 @@ let DB = { Exercises: [], Workouts: [], Sets: [] };
 let CFG = { scriptUrl: '', activeWorkoutId: null };
 let QUEUE = [];           // pending {table,row} upserts
 let UI = { tab: 'plan', dashScheme: 'all', dashExerciseId: null };
+let ADDED = {};           // local-only: { workoutId: { exerciseId: addedTimestamp } } for Log ordering
 let charts = { main: null, vol: null };
 let syncTimer = null, pulling = false, pushing = false;
+
+function isBodyweight(t) { return t === 'bodyweight' || t === 'bodyweight_time'; }
+function isTimed(t) { return t === 'bodyweight_time'; }
+function isSchemeless(ex) { return ex && (ex.weightType === 'sprint' || isBodyweight(ex.weightType)); }
 
 // ---------- helpers ----------
 function uid() { return (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2)); }
@@ -381,11 +386,13 @@ function save() {
   localStorage.setItem('gym.db', JSON.stringify(DB));
   localStorage.setItem('gym.cfg', JSON.stringify(CFG));
   localStorage.setItem('gym.queue', JSON.stringify(QUEUE));
+  localStorage.setItem('gym.added', JSON.stringify(ADDED));
 }
 function load() {
   try { DB = JSON.parse(localStorage.getItem('gym.db')) || DB; } catch (e) {}
   try { CFG = Object.assign(CFG, JSON.parse(localStorage.getItem('gym.cfg')) || {}); } catch (e) {}
   try { QUEUE = JSON.parse(localStorage.getItem('gym.queue')) || []; } catch (e) {}
+  try { ADDED = JSON.parse(localStorage.getItem('gym.added')) || {}; } catch (e) {}
   // Only auto-seed when there's nothing to pull from (local-only first run).
   // On a Sheet-connected device the library comes from the pull, so we don't
   // seed a fresh random set that would collide with it.
@@ -582,16 +589,19 @@ function renderLog() {
     w.notes ? el('div', { class: 'small muted', style: 'margin-top:8px', text: '📝 ' + w.notes }) : el('span'),
   ]));
 
-  // order exercises by most-recent set activity so the one you're currently
-  // logging bubbles to the top; not-yet-started exercises keep their planned
-  // order at the bottom
+  // order exercises by most-recent interaction — whichever is later of when it
+  // was added to the session or its last logged set — so the exercise you just
+  // picked (or are logging) sits on top. A pre-planned batch shares one added
+  // time, so it ties and keeps the order it was picked in.
   const order = (w.plannedEx || []).slice();
   const lastTs = {};
+  const added = ADDED[w.id] || {};
   setsForWorkout(w.id).forEach(s => {
     if (!order.includes(s.exerciseId)) order.push(s.exerciseId);
     lastTs[s.exerciseId] = Math.max(lastTs[s.exerciseId] || 0, s.ts || 0);
   });
-  order.sort((a, b) => (lastTs[b] || 0) - (lastTs[a] || 0)); // stable: ties keep planned order
+  const keyOf = id => Math.max(added[id] || 0, lastTs[id] || 0);
+  order.sort((a, b) => keyOf(b) - keyOf(a)); // stable: ties keep planned order
 
   // action buttons sit directly under the current exercise; finished ones drop below
   const actions = el('div', {}, [
@@ -609,6 +619,16 @@ function renderLog() {
   }
 }
 
+// one set, formatted for its exercise type
+function setDetailHtml(exercise, s) {
+  const t = exercise.weightType;
+  if (t === 'sprint') return '<b>' + fmtNum(s.number) + '</b> × <b>' + fmtNum(s.duration) + 's</b> <span class="muted tiny">' + fmtNum(s.rest) + 's rest</span>';
+  if (isBodyweight(t)) {
+    const base = Number(s.weight) > 0 ? ('BW+<b>' + fmtNum(s.weight) + '</b><span class="muted tiny">kg</span>') : '<b>BW</b>';
+    return base + (isTimed(t) ? (' · <b>' + fmtNum(s.reps) + 's</b>') : (' × ' + s.reps));
+  }
+  return '<b>' + fmtNum(s.weight) + '</b><span class="muted tiny">kg</span> × ' + s.reps;
+}
 function exerciseLogCard(w, exId) {
   const exercise = exById(exId);
   if (!exercise) return el('span');
@@ -642,11 +662,8 @@ function exerciseLogCard(w, exId) {
       const s = grp.find(x => x.person === p);
       const pl = p.toLowerCase();
       if (s) {
-        const detail = exercise.weightType === 'sprint'
-          ? ('<b>' + fmtNum(s.number) + '</b> × <b>' + fmtNum(s.duration) + 's</b> <span class="muted tiny">' + fmtNum(s.rest) + 's rest</span>')
-          : ('<b>' + fmtNum(s.weight) + '</b><span class="muted tiny">kg</span> × ' + s.reps);
         line.appendChild(el('span', { class: 'grow', html:
-          '<span class="pdot dot-' + pl + '">●</span><b class="dot-' + pl + '">' + p + '</b> ' + detail }));
+          '<span class="pdot dot-' + pl + '">●</span><b class="dot-' + pl + '">' + p + '</b> ' + setDetailHtml(exercise, s) }));
       }
     });
     line.appendChild(el('button', { class: 'iconbtn', style: 'width:32px;height:32px;font-size:14px', html: '✕', title: 'Delete set', onclick: () => { grp.forEach(s => { s.deleted = true; upsert('Sets', s); }); renderLog(); } }));
@@ -683,6 +700,9 @@ function addSetModal(w, exercise) {
   const solo = w.type !== 'together';
   const soloPerson = solo ? (w.participants || 'Neil') : null;
   const isSprint = exercise.weightType === 'sprint';
+  const bw = isBodyweight(exercise.weightType);
+  const timed = isTimed(exercise.weightType);
+  const schemeless = isSprint || bw;
   const prev = lastSet(exercise.id, 'Neil') || lastSet(exercise.id, 'Simon');
   let scheme = prev ? Number(prev.scheme) : 5;
   let split = false;
@@ -699,6 +719,10 @@ function addSetModal(w, exercise) {
       return ls ? { duration: Number(ls.duration) || 15, rest: Number(ls.rest) || 30, number: Number(ls.number) || 4 }
                 : { duration: 15, rest: 30, number: 4 };
     }
+    if (bw) {
+      const ls = lastSet(exr.id, p) || lastSet(exr.id, other);
+      return { weight: ls ? Number(ls.weight) : 0, reps: ls ? Number(ls.reps) : (timed ? 30 : 10), loadType: 'plate' };
+    }
     // prefer the last time at THIS scheme (heavy/light differ a lot), then any history
     const ls = lastSet(exr.id, p, scheme) || lastSet(exr.id, other, scheme)
             || lastSet(exr.id, p) || lastSet(exr.id, other);
@@ -710,8 +734,8 @@ function addSetModal(w, exercise) {
     m.innerHTML = '';
     m.appendChild(el('h3', { text: (isSprint ? 'Add sprints · ' : 'Add set · ') + exercise.name }));
 
-    // scheme (heavy/light) — not relevant for sprints
-    if (!isSprint) m.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:14px' }, [5, 15].map(s =>
+    // scheme (heavy/light) — not relevant for sprints or bodyweight
+    if (!schemeless) m.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:14px' }, [5, 15].map(s =>
       el('button', { class: scheme === s ? 'on' : '', text: SCHEMES[s], onclick: () => { scheme = s; vals.Neil = pickStart(exercise, 'Neil'); vals.Simon = pickStart(exercise, 'Simon'); draw(); } })
     )));
 
@@ -770,6 +794,27 @@ function addSetModal(w, exercise) {
       wrap.appendChild(chipStepper(v, 'rest', SPRINT_DEFAULTS.rest, 's', 5));
       wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: 'Number of sprints' }));
       wrap.appendChild(chipStepper(v, 'number', SPRINT_DEFAULTS.number, '', 1));
+    } else if (bw) {
+      v.loadType = v.loadType || 'plate';
+      // Bodyweight vs added-load toggle
+      wrap.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:8px' }, [
+        el('button', { class: (v.weight > 0 ? '' : 'on'), text: 'Bodyweight', onclick: () => { v.weight = 0; draw(); } }),
+        el('button', { class: (v.weight > 0 ? 'on' : ''), text: '+ Added load', onclick: () => { if (!(v.weight > 0)) v.weight = (v.loadType === 'dumbbell' ? DUMBBELLS[2] : v.loadType === 'kettlebell' ? KETTLEBELLS[2] : 2.5); draw(); } }),
+      ]));
+      if (v.weight > 0) {
+        wrap.appendChild(el('div', { class: 'small muted', text: 'Added load from' }));
+        wrap.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:6px' }, [['plate', 'Plate'], ['dumbbell', 'DB'], ['kettlebell', 'KB']].map(t =>
+          el('button', { class: (v.loadType === t[0] ? 'on' : ''), text: t[1], onclick: () => {
+            v.loadType = t[0];
+            if (t[0] === 'dumbbell') v.weight = nearest(DUMBBELLS, v.weight);
+            else if (t[0] === 'kettlebell') v.weight = nearest(KETTLEBELLS, v.weight);
+            draw();
+          } }))));
+        wrap.appendChild(el('div', { class: 'small muted', text: 'Added weight (kg)' }));
+        wrap.appendChild(weightControl({ weightType: v.loadType, step: 2.5 }, v));
+      }
+      wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: timed ? 'Hold (sec)' : 'Reps' }));
+      wrap.appendChild(stepperControl(v, 'reps', timed ? 5 : 1, 0));
     } else {
       wrap.appendChild(el('div', { class: 'small muted', text: 'Weight (kg)' }));
       wrap.appendChild(weightControl(exr, v));
@@ -785,6 +830,7 @@ function addSetModal(w, exercise) {
       const base = { id: uid(), workoutId: w.id, exerciseId: exercise.id, person, ts, warmup: warmup, deleted: false, updated: 0 };
       if (isSprint) return Object.assign(base, { scheme: '', weight: 0, reps: 0,
         duration: Math.round(v.duration), rest: Math.round(v.rest), number: Math.round(v.number) });
+      if (bw) return Object.assign(base, { scheme: '', weight: round2(v.weight), reps: Math.round(v.reps) });
       return Object.assign(base, { scheme, weight: round2(v.weight), reps: Math.round(v.reps) });
     }
     let toAdd = [];
@@ -869,7 +915,12 @@ function addExerciseToWorkout(w) {
       // preserve existing order, append newly added
       const ordered = (w.plannedEx || []).filter(id => chosen.has(id));
       chosen.forEach(id => { if (!ordered.includes(id)) ordered.push(id); });
-      w.plannedEx = ordered; upsert('Workouts', w); closeModal(); renderLog();
+      // stamp the just-added ones with one shared time so they sort to the top
+      // together (newest batch first) while keeping their picked order
+      const stamp = Date.now();
+      ADDED[w.id] = ADDED[w.id] || {};
+      ordered.forEach(id => { if (ADDED[w.id][id] === undefined) ADDED[w.id][id] = stamp; });
+      w.plannedEx = ordered; upsert('Workouts', w); save(); closeModal(); renderLog();
     } }),
   ]));
   openModal();
@@ -940,7 +991,7 @@ function renderDash() {
 }
 function renderProgress() {
   const exr = exById(UI.dashExerciseId);
-  $('#dashSchemeRow').style.display = (exr && exr.weightType === 'sprint') ? 'none' : '';
+  $('#dashSchemeRow').style.display = isSchemeless(exr) ? 'none' : '';
   renderHistory();
   drawVolChart();
 }
@@ -960,10 +1011,16 @@ function sessionsByDate(exId, person, scheme) {
 function volOf(grp) { return grp.reduce((t, s) => t + Number(s.weight) * Number(s.reps), 0); }
 function secsOf(grp) { return grp.reduce((t, s) => t + Number(s.number) * Number(s.duration), 0); }
 // full session breakdown, e.g. "100×5  /  100×5  /  100×5"
-function setListHtml(grp, sprint) {
-  return grp.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)).map(s => sprint
-    ? ('<b>' + fmtNum(s.number) + '</b>×' + fmtNum(s.duration) + 's')
-    : ('<b>' + fmtNum(s.weight) + '</b>×' + s.reps)).join('  /  ');
+function setListHtml(grp, exr) {
+  const t = exr ? exr.weightType : '';
+  return grp.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)).map(s => {
+    if (t === 'sprint') return '<b>' + fmtNum(s.number) + '</b>×' + fmtNum(s.duration) + 's';
+    if (isBodyweight(t)) {
+      const base = Number(s.weight) > 0 ? ('BW+' + fmtNum(s.weight)) : 'BW';
+      return isTimed(t) ? ('<b>' + base + '</b>·' + fmtNum(s.reps) + 's') : ('<b>' + base + '</b>×' + s.reps);
+    }
+    return '<b>' + fmtNum(s.weight) + '</b>×' + s.reps;
+  }).join('  /  ');
 }
 function personHeader(p) {
   const pl = p.toLowerCase();
@@ -976,6 +1033,7 @@ function renderHistory() {
   const exr = exById(UI.dashExerciseId);
   if (!exr) { box.appendChild(el('div', { class: 'empty', text: 'No exercise selected.' })); return; }
   if (exr.weightType === 'sprint') { box.appendChild(sprintHistoryCard(exr)); return; }
+  if (isBodyweight(exr.weightType)) { box.appendChild(bodyweightHistoryCard(exr)); return; }
   [[5, 'Heavy · 5 reps'], [15, 'Light · 15 reps']].forEach(s => box.appendChild(historyCard(exr, s[0], s[1])));
 }
 function historyBlock(p, byDate, opts) {
@@ -987,9 +1045,9 @@ function historyBlock(p, byDate, opts) {
   let bestDate = dates[0];
   dates.forEach(d => { if (opts.score(byDate[d]) > opts.score(byDate[bestDate])) bestDate = d; });
   info.appendChild(el('div', { class: 'small', html:
-    '<span class="muted">Last Session:</span> <span class="muted tiny">' + fmtDate(lastDate) + '</span><br>' + setListHtml(byDate[lastDate], opts.sprint) }));
+    '<span class="muted">Last Session:</span> <span class="muted tiny">' + fmtDate(lastDate) + '</span><br>' + setListHtml(byDate[lastDate], opts.exr) }));
   info.appendChild(el('div', { class: 'small', style: 'margin-top:5px', html:
-    '<span class="muted">Best Effort:</span> <span class="muted tiny">' + fmtDate(bestDate) + ' · ' + opts.bestNote(byDate[bestDate]) + '</span><br>' + setListHtml(byDate[bestDate], opts.sprint) }));
+    '<span class="muted">Best Effort:</span> <span class="muted tiny">' + fmtDate(bestDate) + ' · ' + opts.bestNote(byDate[bestDate]) + '</span><br>' + setListHtml(byDate[bestDate], opts.exr) }));
   return block;
 }
 function historyCard(exr, scheme, label) {
@@ -997,6 +1055,7 @@ function historyCard(exr, scheme, label) {
   card.appendChild(el('strong', { text: label }));
   PEOPLE.forEach(p => card.appendChild(historyBlock(p, sessionsByDate(exr.id, p, scheme), {
     empty: 'No ' + (scheme === 5 ? 'heavy' : 'light') + ' sets yet',
+    exr: exr,
     score: volOf,
     bestNote: grp => volOf(grp).toLocaleString() + ' kg',
   })));
@@ -1007,9 +1066,22 @@ function sprintHistoryCard(exr) {
   card.appendChild(el('strong', { text: 'Sprints' }));
   PEOPLE.forEach(p => card.appendChild(historyBlock(p, sessionsByDate(exr.id, p), {
     empty: 'No sprints yet',
-    sprint: true,
+    exr: exr,
     score: secsOf,
     bestNote: grp => secsOf(grp) + 's total',
+  })));
+  return card;
+}
+function bodyweightHistoryCard(exr) {
+  const timedT = isTimed(exr.weightType);
+  const score = grp => grp.reduce((t, s) => t + Number(s.reps), 0); // total reps (or total seconds)
+  const card = el('div', { class: 'card' });
+  card.appendChild(el('strong', { text: timedT ? 'Hold time' : 'Reps' }));
+  PEOPLE.forEach(p => card.appendChild(historyBlock(p, sessionsByDate(exr.id, p), {
+    empty: 'No sets yet',
+    exr: exr,
+    score: score,
+    bestNote: grp => score(grp) + (timedT ? 's total' : ' reps total'),
   })));
   return card;
 }
@@ -1018,12 +1090,15 @@ function drawVolChart() {
   if (charts.vol) { charts.vol.destroy(); charts.vol = null; }
   if (!exr) return;
   const sprint = exr.weightType === 'sprint';
-  let sets = DB.Sets.filter(s => s.exerciseId === exr.id && !s.deleted);
-  if (!sprint && UI.dashScheme !== 'all') sets = sets.filter(s => Number(s.scheme) === Number(UI.dashScheme));
+  const bw = isBodyweight(exr.weightType);
+  let sets = DB.Sets.filter(s => s.exerciseId === exr.id && !s.deleted && !s.warmup);
+  if (!isSchemeless(exr) && UI.dashScheme !== 'all') sets = sets.filter(s => Number(s.scheme) === Number(UI.dashScheme));
   const volMap = {};
   sets.forEach(s => {
     const d = workoutDate(s);
-    const vol = sprint ? (Number(s.number) || 0) * (Number(s.duration) || 0) : Number(s.weight) * Number(s.reps);
+    const vol = sprint ? (Number(s.number) || 0) * (Number(s.duration) || 0)
+              : bw ? (Number(s.reps) || 0)
+              : Number(s.weight) * Number(s.reps);
     volMap[d] = volMap[d] || {};
     volMap[d][s.person] = (volMap[d][s.person] || 0) + vol;
   });
@@ -1086,11 +1161,11 @@ function exerciseModal(existing, onCreate) {
   const name = el('input', { type: 'text', placeholder: 'e.g. Cable row', value: e.name });
   m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Name' }), name]));
 
-  const cats = ['Chest', 'Back', 'Shoulders', 'Arms', 'Legs', 'Core', 'Cardio', 'Other'];
+  const cats = ['Chest', 'Back', 'Shoulders', 'Arms', 'Legs', 'Core', 'Cardio', 'Mobility', 'Other'];
   const catSel = el('select', {}, cats.map(c => el('option', { value: c, text: c }))); catSel.value = e.category || 'Chest';
   m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Category' }), catSel]));
 
-  const types = [['plate', 'Plate-loaded / barbell (±2.5 kg)'], ['machine', 'Machine stack (+micro plates)'], ['dumbbell', 'Dumbbell singles'], ['kettlebell', 'Kettlebell'], ['sprint', 'Sprints (duration / rest / number)']];
+  const types = [['plate', 'Plate-loaded / barbell (±2.5 kg)'], ['machine', 'Machine stack (+micro plates)'], ['dumbbell', 'Dumbbell singles'], ['kettlebell', 'Kettlebell'], ['sprint', 'Sprints (duration / rest / number)'], ['bodyweight', 'Bodyweight — reps (+ optional load)'], ['bodyweight_time', 'Bodyweight — hold time (+ optional load)']];
   const typeSel = el('select', {}, types.map(t => el('option', { value: t[0], text: t[1] }))); typeSel.value = e.weightType;
   m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Type' }), typeSel]));
 
@@ -1106,7 +1181,7 @@ function exerciseModal(existing, onCreate) {
   // show only the fields that make sense for the chosen type
   function syncTypeVis() {
     stepField.style.display = (typeSel.value === 'plate' || typeSel.value === 'machine') ? '' : 'none';
-    invField.style.display = (typeSel.value === 'sprint') ? 'none' : '';
+    invField.style.display = (typeSel.value === 'sprint' || isBodyweight(typeSel.value)) ? 'none' : '';
   }
   typeSel.addEventListener('change', syncTypeVis); syncTypeVis();
 
