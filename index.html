@@ -320,7 +320,11 @@ let syncTimer = null, pulling = false, pushing = false;
 
 function isBodyweight(t) { return t === 'bodyweight' || t === 'bodyweight_time'; }
 function isTimed(t) { return t === 'bodyweight_time'; }
-function isSchemeless(ex) { return ex && (ex.weightType === 'sprint' || isBodyweight(ex.weightType)); }
+function isCardio(t) { return t === 'cardio'; }
+function isSchemeless(ex) { return ex && (ex.weightType === 'sprint' || isBodyweight(ex.weightType) || isCardio(ex.weightType)); }
+function fmtMMSS(sec) { sec = Math.max(0, Math.round(Number(sec) || 0)); const m = Math.floor(sec / 60), s = sec % 60; return m + ':' + String(s).padStart(2, '0'); }
+// effort score for a cardio machine: minutes × setting
+function cardioEffort(s) { return (Number(s.duration) || 0) / 60 * (Number(s.weight) || 0); }
 
 // ---------- helpers ----------
 function uid() { return (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2)); }
@@ -623,6 +627,7 @@ function renderLog() {
 function setDetailHtml(exercise, s) {
   const t = exercise.weightType;
   if (t === 'sprint') return '<b>' + fmtNum(s.number) + '</b> × <b>' + fmtNum(s.duration) + 's</b> <span class="muted tiny">' + fmtNum(s.rest) + 's rest</span>';
+  if (t === 'cardio') return '<b>' + fmtMMSS(s.duration) + '</b> <span class="muted tiny">min</span> · <b>' + fmtNum(s.weight) + '</b><span class="muted tiny"> setting</span>';
   if (isBodyweight(t)) {
     const base = Number(s.weight) > 0 ? ('BW+<b>' + fmtNum(s.weight) + '</b><span class="muted tiny">kg</span>') : '<b>BW</b>';
     return base + (isTimed(t) ? (' · <b>' + fmtNum(s.reps) + 's</b>') : (' × ' + s.reps));
@@ -702,7 +707,8 @@ function addSetModal(w, exercise) {
   const isSprint = exercise.weightType === 'sprint';
   const bw = isBodyweight(exercise.weightType);
   const timed = isTimed(exercise.weightType);
-  const schemeless = isSprint || bw;
+  const cardio = isCardio(exercise.weightType);
+  const schemeless = isSprint || bw || cardio;
   const prev = lastSet(exercise.id, 'Neil') || lastSet(exercise.id, 'Simon');
   let scheme = prev ? Number(prev.scheme) : 5;
   let split = false;
@@ -722,6 +728,11 @@ function addSetModal(w, exercise) {
     if (bw) {
       const ls = lastSet(exr.id, p) || lastSet(exr.id, other);
       return { weight: ls ? Number(ls.weight) : 0, reps: ls ? Number(ls.reps) : (timed ? 30 : 10), loadType: 'plate' };
+    }
+    if (cardio) {
+      const ls = lastSet(exr.id, p) || lastSet(exr.id, other);
+      const dur = ls ? Number(ls.duration) : 600;
+      return { durMin: Math.floor(dur / 60), durSec: dur % 60, setting: ls ? Number(ls.weight) : 1 };
     }
     // prefer the last time at THIS scheme (heavy/light differ a lot), then any history
     const ls = lastSet(exr.id, p, scheme) || lastSet(exr.id, other, scheme)
@@ -815,6 +826,14 @@ function addSetModal(w, exercise) {
       }
       wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: timed ? 'Hold (sec)' : 'Reps' }));
       wrap.appendChild(stepperControl(v, 'reps', timed ? 5 : 1, 0));
+    } else if (cardio) {
+      wrap.appendChild(el('div', { class: 'small muted', text: 'Duration (min : sec)' }));
+      wrap.appendChild(el('div', { class: 'row', style: 'gap:8px' }, [
+        el('div', { class: 'grow' }, [stepperControl(v, 'durMin', 1, 0)]),
+        el('div', { class: 'grow' }, [stepperControl(v, 'durSec', 5, 0)]),
+      ]));
+      wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: 'Setting' }));
+      wrap.appendChild(stepperControl(v, 'setting', 0.1, 0));
     } else {
       wrap.appendChild(el('div', { class: 'small muted', text: 'Weight (kg)' }));
       wrap.appendChild(weightControl(exr, v));
@@ -831,6 +850,8 @@ function addSetModal(w, exercise) {
       if (isSprint) return Object.assign(base, { scheme: '', weight: 0, reps: 0,
         duration: Math.round(v.duration), rest: Math.round(v.rest), number: Math.round(v.number) });
       if (bw) return Object.assign(base, { scheme: '', weight: round2(v.weight), reps: Math.round(v.reps) });
+      if (cardio) return Object.assign(base, { scheme: '', weight: round2(v.setting), reps: 0,
+        duration: Math.max(0, Math.round(v.durMin)) * 60 + Math.max(0, Math.round(v.durSec)) });
       return Object.assign(base, { scheme, weight: round2(v.weight), reps: Math.round(v.reps) });
     }
     let toAdd = [];
@@ -1015,6 +1036,7 @@ function setListHtml(grp, exr) {
   const t = exr ? exr.weightType : '';
   return grp.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)).map(s => {
     if (t === 'sprint') return '<b>' + fmtNum(s.number) + '</b>×' + fmtNum(s.duration) + 's';
+    if (t === 'cardio') return '<b>' + fmtMMSS(s.duration) + '</b>@' + fmtNum(s.weight);
     if (isBodyweight(t)) {
       const base = Number(s.weight) > 0 ? ('BW+' + fmtNum(s.weight)) : 'BW';
       return isTimed(t) ? ('<b>' + base + '</b>·' + fmtNum(s.reps) + 's') : ('<b>' + base + '</b>×' + s.reps);
@@ -1033,6 +1055,7 @@ function renderHistory() {
   const exr = exById(UI.dashExerciseId);
   if (!exr) { box.appendChild(el('div', { class: 'empty', text: 'No exercise selected.' })); return; }
   if (exr.weightType === 'sprint') { box.appendChild(sprintHistoryCard(exr)); return; }
+  if (isCardio(exr.weightType)) { box.appendChild(cardioHistoryCard(exr)); return; }
   if (isBodyweight(exr.weightType)) { box.appendChild(bodyweightHistoryCard(exr)); return; }
   [[5, 'Heavy · 5 reps'], [15, 'Light · 15 reps']].forEach(s => box.appendChild(historyCard(exr, s[0], s[1])));
 }
@@ -1072,6 +1095,18 @@ function sprintHistoryCard(exr) {
   })));
   return card;
 }
+function cardioHistoryCard(exr) {
+  const score = grp => grp.reduce((t, s) => t + cardioEffort(s), 0); // total minutes×setting
+  const card = el('div', { class: 'card' });
+  card.appendChild(el('strong', { text: 'Cardio' }));
+  PEOPLE.forEach(p => card.appendChild(historyBlock(p, sessionsByDate(exr.id, p), {
+    empty: 'No sessions yet',
+    exr: exr,
+    score: score,
+    bestNote: grp => Math.round(score(grp)) + ' effort (min×setting)',
+  })));
+  return card;
+}
 function bodyweightHistoryCard(exr) {
   const timedT = isTimed(exr.weightType);
   const score = grp => grp.reduce((t, s) => t + Number(s.reps), 0); // total reps (or total seconds)
@@ -1091,12 +1126,14 @@ function drawVolChart() {
   if (!exr) return;
   const sprint = exr.weightType === 'sprint';
   const bw = isBodyweight(exr.weightType);
+  const cardio = isCardio(exr.weightType);
   let sets = DB.Sets.filter(s => s.exerciseId === exr.id && !s.deleted && !s.warmup);
   if (!isSchemeless(exr) && UI.dashScheme !== 'all') sets = sets.filter(s => Number(s.scheme) === Number(UI.dashScheme));
   const volMap = {};
   sets.forEach(s => {
     const d = workoutDate(s);
     const vol = sprint ? (Number(s.number) || 0) * (Number(s.duration) || 0)
+              : cardio ? cardioEffort(s)
               : bw ? (Number(s.reps) || 0)
               : Number(s.weight) * Number(s.reps);
     volMap[d] = volMap[d] || {};
@@ -1165,7 +1202,7 @@ function exerciseModal(existing, onCreate) {
   const catSel = el('select', {}, cats.map(c => el('option', { value: c, text: c }))); catSel.value = e.category || 'Chest';
   m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Category' }), catSel]));
 
-  const types = [['plate', 'Plate-loaded / barbell (±2.5 kg)'], ['machine', 'Machine stack (+micro plates)'], ['dumbbell', 'Dumbbell singles'], ['kettlebell', 'Kettlebell'], ['sprint', 'Sprints (duration / rest / number)'], ['bodyweight', 'Bodyweight — reps (+ optional load)'], ['bodyweight_time', 'Bodyweight — hold time (+ optional load)']];
+  const types = [['plate', 'Plate-loaded / barbell (±2.5 kg)'], ['machine', 'Machine stack (+micro plates)'], ['dumbbell', 'Dumbbell singles'], ['kettlebell', 'Kettlebell'], ['sprint', 'Sprints (duration / rest / number)'], ['bodyweight', 'Bodyweight — reps (+ optional load)'], ['bodyweight_time', 'Bodyweight — hold time (+ optional load)'], ['cardio', 'Cardio machine (duration + setting)']];
   const typeSel = el('select', {}, types.map(t => el('option', { value: t[0], text: t[1] }))); typeSel.value = e.weightType;
   m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Type' }), typeSel]));
 
@@ -1181,7 +1218,7 @@ function exerciseModal(existing, onCreate) {
   // show only the fields that make sense for the chosen type
   function syncTypeVis() {
     stepField.style.display = (typeSel.value === 'plate' || typeSel.value === 'machine') ? '' : 'none';
-    invField.style.display = (typeSel.value === 'sprint' || isBodyweight(typeSel.value)) ? 'none' : '';
+    invField.style.display = (typeSel.value === 'sprint' || isBodyweight(typeSel.value) || isCardio(typeSel.value)) ? 'none' : '';
   }
   typeSel.addEventListener('change', syncTypeVis); syncTypeVis();
 
