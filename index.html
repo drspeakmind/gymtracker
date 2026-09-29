@@ -1283,6 +1283,19 @@ function addExerciseToWorkout(w) {
   const m = $('#modal');
   m.innerHTML = '';
   m.appendChild(el('h3', { text: 'Add exercises' }));
+  // save whatever is ticked (keeping existing order, appending new picks) and close
+  function commit() {
+    const ordered = (w.plannedEx || []).filter(id => chosen.has(id));
+    chosen.forEach(id => { if (!ordered.includes(id)) ordered.push(id); });
+    // stamp the just-added ones with one shared time so they sort to the top
+    // together (newest batch first) while keeping their picked order
+    const stamp = Date.now();
+    ADDED[w.id] = ADDED[w.id] || {};
+    ordered.forEach(id => { if (ADDED[w.id][id] === undefined) ADDED[w.id][id] = stamp; });
+    w.plannedEx = ordered; upsert('Workouts', w); save(); closeModal(); renderLog();
+  }
+  // straight to a circuit without having to press Done first; ticked exercises are kept
+  m.appendChild(el('button', { class: 'btn block ghost', style: 'margin-bottom:4px', text: '🔁 Add a circuit instead', onclick: () => { commit(); addCircuitModal(w); } }));
   const listWrap = el('div');
   byCategory().forEach(([cat, items]) => {
     listWrap.appendChild(el('h2', { class: 'section', text: cat }));
@@ -1296,17 +1309,7 @@ function addExerciseToWorkout(w) {
   m.appendChild(el('button', { class: 'btn block', style: 'margin-top:8px', text: '+ Create brand-new exercise', onclick: () => exerciseModal(null, (newId) => { chosen.add(newId); addExerciseToWorkout(w); }) }));
   m.appendChild(el('div', { class: 'row', style: 'margin-top:16px;gap:10px' }, [
     el('button', { class: 'btn ghost', style: 'flex:1', text: 'Cancel', onclick: closeModal }),
-    el('button', { class: 'btn', style: 'flex:2', text: 'Done', onclick: () => {
-      // preserve existing order, append newly added
-      const ordered = (w.plannedEx || []).filter(id => chosen.has(id));
-      chosen.forEach(id => { if (!ordered.includes(id)) ordered.push(id); });
-      // stamp the just-added ones with one shared time so they sort to the top
-      // together (newest batch first) while keeping their picked order
-      const stamp = Date.now();
-      ADDED[w.id] = ADDED[w.id] || {};
-      ordered.forEach(id => { if (ADDED[w.id][id] === undefined) ADDED[w.id][id] = stamp; });
-      w.plannedEx = ordered; upsert('Workouts', w); save(); closeModal(); renderLog();
-    } }),
+    el('button', { class: 'btn', style: 'flex:2', text: 'Done', onclick: commit }),
   ]));
   openModal();
 }
