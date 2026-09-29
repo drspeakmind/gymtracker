@@ -798,7 +798,11 @@ function stationDetailHtml(exr, rowByPerson, people) {
   }).join('  ');
 }
 function roundSummaryHtml(c, sets, people) {
-  return (c.stations || []).map(exId => {
+  // the circuit's stations in order, plus any station it had when this round was logged
+  const ids = (c.stations || []).slice();
+  sets.forEach(s => { if (ids.indexOf(s.exerciseId) === -1) ids.push(s.exerciseId); });
+  return ids.map(exId => {
+    if (!sets.some(s => s.exerciseId === exId)) return '';   // wasn't part of this round
     const exr = exById(exId); if (!exr) return '';
     const by = {}; people.forEach(p => { by[p] = sets.find(s => s.exerciseId === exId && s.person === p) || null; });
     return '<span class="muted">' + esc(exr.name) + '</span> ' + stationDetailHtml(exr, by, people);
@@ -844,6 +848,7 @@ function circuitCard(w, c) {
     ]));
   });
   box.appendChild(el('button', { class: 'btn block', style: 'margin-top:10px', text: '✓ Log round ' + nextNo, onclick: () => logCircuitRound(w, c) }));
+  box.appendChild(el('button', { class: 'btn sm ghost block', style: 'margin-top:8px', text: '+ Add / swap stations', onclick: () => editCircuitModal(w, c) }));
   card.appendChild(box);
   return card;
 }
@@ -891,6 +896,77 @@ function startCircuit(w, stations, name) {
   closeModal(); renderLog(); toast('Circuit added');
 }
 
+// The shared "pick stations in order" UI: an ordered list (▲ ▼ ✕) plus a tick-list of the
+// whole library. opts.between() can add fields between the two; opts.reopen() redraws the
+// caller's modal (used after creating a brand-new exercise from here).
+function stationPicker(m, state, opts) {
+  const listBox = el('div'); m.appendChild(listBox);
+  const cbs = {};
+  const small = 'width:32px;height:32px;font-size:13px;flex:none';
+  function move(i, d) {
+    const j = i + d; if (j < 0 || j >= state.stations.length) return;
+    const t = state.stations[i]; state.stations[i] = state.stations[j]; state.stations[j] = t; drawList();
+  }
+  function drawList() {
+    listBox.innerHTML = '';
+    if (!state.stations.length) { listBox.appendChild(el('div', { class: 'small muted', style: 'padding:6px 0', text: 'No stations yet — tick exercises below.' })); return; }
+    state.stations.forEach((id, i) => {
+      const e = exById(id);
+      listBox.appendChild(el('div', { class: 'exrow' }, [
+        el('span', { class: 'muted', style: 'width:20px', text: String(i + 1) }),
+        el('div', { class: 'grow', text: e ? e.name : '?' }),
+        el('button', { class: 'iconbtn', style: small, text: '▲', title: 'Move up', onclick: () => move(i, -1) }),
+        el('button', { class: 'iconbtn', style: small, text: '▼', title: 'Move down', onclick: () => move(i, 1) }),
+        el('button', { class: 'iconbtn', style: small, html: '✕', title: 'Remove', onclick: () => { state.stations = state.stations.filter(x => x !== id); if (cbs[id]) cbs[id].checked = false; drawList(); } }),
+      ]));
+    });
+  }
+  drawList();
+  if (opts.between) opts.between();
+
+  m.appendChild(el('h2', { class: 'section', text: 'Exercises' }));
+  byCategory().forEach(([cat, items]) => {
+    m.appendChild(el('div', { class: 'small muted', style: 'margin-top:8px', text: cat }));
+    items.forEach(e => {
+      const cb = el('input', { type: 'checkbox' }); cb.checked = state.stations.includes(e.id); cbs[e.id] = cb;
+      cb.addEventListener('change', () => {
+        if (cb.checked) { if (!state.stations.includes(e.id)) state.stations.push(e.id); }
+        else state.stations = state.stations.filter(x => x !== e.id);
+        drawList();
+      });
+      m.appendChild(el('label', { class: 'checkline' }, [cb, el('span', { text: e.name }), el('span', { class: 'spacer' }), el('span', { class: 'tiny muted', text: e.weightType })]));
+    });
+  });
+  m.appendChild(el('button', { class: 'btn block ghost', style: 'margin-top:10px', text: '+ Create brand-new exercise',
+    onclick: () => exerciseModal(null, newId => { state.stations.push(newId); opts.reopen(); }) }));
+}
+
+// Change the stations of a circuit that's already under way: add, remove, reorder, swap.
+// Rounds already logged are left exactly as they were; the change applies from the next round.
+function editCircuitModal(w, c, state) {
+  state = state || { stations: (c.stations || []).slice() };
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', { text: '🔁 Add / swap stations' }));
+  m.appendChild(el('div', { class: 'small muted', text: 'Rounds you have already logged stay exactly as they are. Changes apply from the next round.' }));
+  stationPicker(m, state, { reopen: () => editCircuitModal(w, c, state) });
+  m.appendChild(el('div', { class: 'stickybar row', style: 'gap:10px' }, [
+    el('button', { class: 'btn ghost', style: 'flex:1', text: 'Cancel', onclick: closeModal }),
+    el('button', { class: 'btn', style: 'flex:2', text: 'Save changes', onclick: () => {
+      if (state.stations.length < 1) { toast('Keep at least one station'); return; }
+      applyStationChange(w, c, state.stations);
+    } }),
+  ]));
+  openModal();
+}
+function applyStationChange(w, c, stations) {
+  const old = PENDING[c.id];      // keep any edits already made to the round in progress
+  delete PENDING[c.id];
+  c.stations = stations.slice();
+  const fresh = pendingFor(w, c); // new stations start from their last circuit / straight-set weight
+  if (old) Object.keys(fresh).forEach(exId => { if (old[exId]) fresh[exId] = old[exId]; });
+  upsert('Workouts', w); closeModal(); renderLog(); toast('Circuit updated');
+}
+
 // pick a saved circuit, or build one: exercises in the order you do them
 function addCircuitModal(w, state) {
   state = state || { stations: [], saveAs: false, name: '' };
@@ -915,51 +991,17 @@ function addCircuitModal(w, state) {
   }
 
   m.appendChild(el('h2', { class: 'section', text: saved.length ? 'Or build a new one' : 'Build your circuit' }));
-  const listBox = el('div'); m.appendChild(listBox);
-  const cbs = {};
-  const small = 'width:32px;height:32px;font-size:13px;flex:none';
-  function move(i, d) {
-    const j = i + d; if (j < 0 || j >= state.stations.length) return;
-    const t = state.stations[i]; state.stations[i] = state.stations[j]; state.stations[j] = t; drawList();
-  }
-  function drawList() {
-    listBox.innerHTML = '';
-    if (!state.stations.length) { listBox.appendChild(el('div', { class: 'small muted', style: 'padding:6px 0', text: 'No stations yet — tick exercises below.' })); return; }
-    state.stations.forEach((id, i) => {
-      const e = exById(id);
-      listBox.appendChild(el('div', { class: 'exrow' }, [
-        el('span', { class: 'muted', style: 'width:20px', text: String(i + 1) }),
-        el('div', { class: 'grow', text: e ? e.name : '?' }),
-        el('button', { class: 'iconbtn', style: small, text: '▲', title: 'Move up', onclick: () => move(i, -1) }),
-        el('button', { class: 'iconbtn', style: small, text: '▼', title: 'Move down', onclick: () => move(i, 1) }),
-        el('button', { class: 'iconbtn', style: small, html: '✕', title: 'Remove', onclick: () => { state.stations = state.stations.filter(x => x !== id); if (cbs[id]) cbs[id].checked = false; drawList(); } }),
-      ]));
-    });
-  }
-  drawList();
-
-  const nameIn = el('input', { type: 'text', placeholder: 'Optional — needed if you want to save it', value: state.name });
-  nameIn.addEventListener('input', () => { state.name = nameIn.value; });
-  m.appendChild(el('label', { class: 'field', style: 'margin-top:12px' }, [el('span', { text: 'Circuit name' }), nameIn]));
-  const saveCb = el('input', { type: 'checkbox' }); saveCb.checked = state.saveAs;
-  saveCb.addEventListener('change', () => { state.saveAs = saveCb.checked; });
-  m.appendChild(el('label', { class: 'checkline', style: 'border:none' }, [saveCb, el('span', { text: 'Save as a reusable circuit' })]));
-
-  m.appendChild(el('h2', { class: 'section', text: 'Exercises' }));
-  byCategory().forEach(([cat, items]) => {
-    m.appendChild(el('div', { class: 'small muted', style: 'margin-top:8px', text: cat }));
-    items.forEach(e => {
-      const cb = el('input', { type: 'checkbox' }); cb.checked = state.stations.includes(e.id); cbs[e.id] = cb;
-      cb.addEventListener('change', () => {
-        if (cb.checked) { if (!state.stations.includes(e.id)) state.stations.push(e.id); }
-        else state.stations = state.stations.filter(x => x !== e.id);
-        drawList();
-      });
-      m.appendChild(el('label', { class: 'checkline' }, [cb, el('span', { text: e.name }), el('span', { class: 'spacer' }), el('span', { class: 'tiny muted', text: e.weightType })]));
-    });
+  stationPicker(m, state, {
+    reopen: () => addCircuitModal(w, state),
+    between: () => {   // name + save option sit between the ordered list and the exercise tick-list
+      const nameIn = el('input', { type: 'text', placeholder: 'Optional — needed if you want to save it', value: state.name });
+      nameIn.addEventListener('input', () => { state.name = nameIn.value; });
+      m.appendChild(el('label', { class: 'field', style: 'margin-top:12px' }, [el('span', { text: 'Circuit name' }), nameIn]));
+      const saveCb = el('input', { type: 'checkbox' }); saveCb.checked = state.saveAs;
+      saveCb.addEventListener('change', () => { state.saveAs = saveCb.checked; });
+      m.appendChild(el('label', { class: 'checkline', style: 'border:none' }, [saveCb, el('span', { text: 'Save as a reusable circuit' })]));
+    },
   });
-  m.appendChild(el('button', { class: 'btn block ghost', style: 'margin-top:10px', text: '+ Create brand-new exercise',
-    onclick: () => exerciseModal(null, newId => { state.stations.push(newId); addCircuitModal(w, state); }) }));
 
   m.appendChild(el('div', { class: 'stickybar row', style: 'gap:10px' }, [
     el('button', { class: 'btn ghost', style: 'flex:1', text: 'Cancel', onclick: closeModal }),
@@ -1328,9 +1370,14 @@ function circuitGroups() {
   DB.Workouts.filter(w => !w.deleted).forEach(w => (w.circuits || []).forEach(c => {
     if (!circuitSets(w, c).length) return;
     const k = circuitKey(c), dt = dateKey(w.date);
-    if (!map[k] || dt >= map[k].latest) map[k] = { key: k, name: circuitName(c), latest: dt };
+    if (!map[k] || dt >= map[k].latest) map[k] = { key: k, name: circuitName(c), latest: dt, n: (c.stations || []).length };
   }));
-  return Object.keys(map).map(k => map[k]).sort((a, b) => a.name.localeCompare(b.name));
+  const groups = Object.keys(map).map(k => map[k]);
+  // two variants of a circuit can share a name (e.g. one gained a station): tell them apart
+  const seen = {};
+  groups.forEach(g => { seen[g.name] = (seen[g.name] || 0) + 1; });
+  groups.forEach(g => { if (seen[g.name] > 1) g.name += ' (' + g.n + ' exercises)'; });
+  return groups.sort((a, b) => a.name.localeCompare(b.name));
 }
 // the circuit key when the Progress dropdown is on a circuit, else null
 function dashCircuitKey() { const v = UI.dashExerciseId || ''; return v.indexOf('circ:') === 0 ? v.slice(5) : null; }

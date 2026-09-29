@@ -76,7 +76,10 @@ three steps on his phone with the same URL.
   You log **round by round**: the next round is pre-filled from the last, so
   **✓ Log round N** is one tap; tap any station to change its weight/reps (same
   for both, or separately). Rounds are open-ended — just keep logging. Finished
-  rounds collapse to one line (✕ deletes a round, 🗑 the whole circuit). Circuit
+  rounds collapse to one line (✕ deletes a round, 🗑 the whole circuit). **+ Add /
+  swap stations** on the card lets you add, remove, reorder or swap exercises at
+  any point; rounds already logged are untouched and the change applies from the
+  next round. Circuit
   sets are kept **out of each exercise's own Heavy/Light history**; each circuit
   has its own entry under *Circuits* in the Progress dropdown (Last Session / Best
   Effort by rounds, plus a rounds-per-session chart). Saved circuits live in a
