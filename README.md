@@ -70,6 +70,17 @@ three steps on his phone with the same URL.
   remembered separately). **Sprints** are a special type: instead of weight × reps
   you log **duration / rest / number** (presets + manual). Each exercise card also
   has a 🗑 to remove it from the session, and *Duplicate last* to repeat a set.
+- **Circuits** — for rounds-based work (KB swings → deadbug → OHP, then round 2…),
+  tap **🔁 Add circuit** in the Log. Pick the exercises in the order you do them
+  (optionally name it and tick *Save as a reusable circuit*, or pick a saved one).
+  You log **round by round**: the next round is pre-filled from the last, so
+  **✓ Log round N** is one tap; tap any station to change its weight/reps (same
+  for both, or separately). Rounds are open-ended — just keep logging. Finished
+  rounds collapse to one line (✕ deletes a round, 🗑 the whole circuit). Circuit
+  sets are kept **out of each exercise's own Heavy/Light history**; each circuit
+  has its own entry under *Circuits* in the Progress dropdown (Last Session / Best
+  Effort by rounds, plus a rounds-per-session chart). Saved circuits live in a
+  `Circuits` tab in the Sheet.
 - **Progress** — pick an exercise to see its **History**: for each scheme
   (Heavy 5 / Light 15) and each of you, your **last** set (weight × reps + date)
   and your **best-ever session by volume** (sets · top set · total kg + date) —

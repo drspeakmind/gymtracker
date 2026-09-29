@@ -14,8 +14,9 @@
 
 var TABLES = {
   Exercises: ['id', 'name', 'weightType', 'category', 'step', 'inverted', 'archived', 'sortOrder', 'updated'],
-  Workouts:  ['id', 'date', 'type', 'participants', 'status', 'notes', 'plannedEx', 'deleted', 'updated'],
-  Sets:      ['id', 'workoutId', 'exerciseId', 'person', 'scheme', 'weight', 'reps', 'ts', 'duration', 'rest', 'number', 'warmup', 'deleted', 'updated']
+  Workouts:  ['id', 'date', 'type', 'participants', 'status', 'notes', 'plannedEx', 'circuits', 'deleted', 'updated'],
+  Sets:      ['id', 'workoutId', 'exerciseId', 'person', 'scheme', 'weight', 'reps', 'ts', 'duration', 'rest', 'number', 'warmup', 'circuitId', 'round', 'deleted', 'updated'],
+  Circuits:  ['id', 'name', 'stations', 'deleted', 'updated']   // saved, reusable circuits
 };
 
 // Wraps any object as a JSON HTTP response.

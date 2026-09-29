@@ -80,6 +80,16 @@
   .pdot { font-size: 17px; vertical-align: -1px; margin-right: 3px; }
   .chartbox { position: relative; height: 240px; margin-top: 10px; }
 
+  /* circuits */
+  .circ-pending { margin-top: 10px; padding: 10px 10px 12px; border: 1px dashed var(--accent); border-radius: 12px; background: rgba(56,189,248,.06); }
+  .circ-station { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border-top: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
+  .circ-station.first { border-top: none; }
+  .circ-station:active { background: var(--panel2); }
+  .circ-station .num { width: 18px; text-align: center; color: var(--muted); font-size: 12px; }
+  .circ-round { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-top: 1px dashed var(--line); font-size: 14px; }
+  .circ-round .rn { min-width: 24px; color: var(--muted); font-size: 12px; padding-top: 2px; }
+  .stickybar { position: sticky; bottom: 0; margin: 14px -16px -20px; padding: 12px 16px calc(14px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--line); z-index: 2; }
+
   label.field { display: block; margin-bottom: 12px; }
   label.field > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
   input, select, textarea, button { font: inherit; }
@@ -182,7 +192,7 @@
         <select id="dashExercise"></select>
       </label>
       <div id="historyBox"></div>
-      <h2 class="section">Volume trend</h2>
+      <h2 class="section" id="trendTitle">Volume trend</h2>
       <div class="row" id="dashSchemeRow" style="margin-bottom:10px">
         <div class="seg fill" id="dashScheme" style="flex:1">
           <button data-s="all" class="on">All</button>
@@ -275,6 +285,7 @@ function ensureDefaultExercises() {
     enqueue('Exercises', row, true);
   });
 }
+function swapStation(list, from, to) { return (list || []).map(id => id === from ? to : id).filter((v, i, a) => a.indexOf(v) === i); }
 // Self-healing: collapse exercises that share a name (case-insensitive) onto a
 // single canonical copy — the one with the most logged sets (ties broken by id
 // for cross-device determinism). Any sets / planned lists on the duplicates are
@@ -302,6 +313,14 @@ function dedupeExercises() {
           w.plannedEx = w.plannedEx.map(id => id === dup.id ? canon.id : id).filter((v, i, a) => a.indexOf(v) === i);
           upsert('Workouts', w);
         }
+        // circuit stations pointing at the duplicate
+        if (Array.isArray(w.circuits) && w.circuits.some(c => (c.stations || []).indexOf(dup.id) !== -1)) {
+          w.circuits = w.circuits.map(c => Object.assign({}, c, { stations: swapStation(c.stations, dup.id, canon.id) }));
+          upsert('Workouts', w);
+        }
+      });
+      (DB.Circuits || []).forEach(c => {
+        if ((c.stations || []).indexOf(dup.id) !== -1) { c.stations = swapStation(c.stations, dup.id, canon.id); upsert('Circuits', c); }
       });
       dup.archived = true;
       upsert('Exercises', dup);
@@ -310,7 +329,8 @@ function dedupeExercises() {
 }
 
 // ---------- state ----------
-let DB = { Exercises: [], Workouts: [], Sets: [] };
+let DB = { Exercises: [], Workouts: [], Sets: [], Circuits: [] };
+let PENDING = {};         // circuitId -> { exerciseId: { person: values } } — the round being set up, not yet logged
 let CFG = { scriptUrl: '', activeWorkoutId: null };
 let QUEUE = [];           // pending {table,row} upserts
 let UI = { tab: 'plan', dashScheme: 'all', dashExerciseId: null };
@@ -401,6 +421,7 @@ function load() {
   try { CFG = Object.assign(CFG, JSON.parse(localStorage.getItem('gym.cfg')) || {}); } catch (e) {}
   try { QUEUE = JSON.parse(localStorage.getItem('gym.queue')) || []; } catch (e) {}
   try { ADDED = JSON.parse(localStorage.getItem('gym.added')) || {}; } catch (e) {}
+  if (!Array.isArray(DB.Circuits)) DB.Circuits = [];   // older saved data predates circuits
   // Only auto-seed when there's nothing to pull from (local-only first run).
   // On a Sheet-connected device the library comes from the pull, so we don't
   // seed a fresh random set that would collide with it.
@@ -483,7 +504,7 @@ async function pullAll() {
 }
 // Last-write-wins merge by id+updated. Locally-queued rows are re-applied after.
 function mergeServer(server) {
-  ['Exercises', 'Workouts', 'Sets'].forEach(t => {
+  ['Exercises', 'Workouts', 'Sets', 'Circuits'].forEach(t => {
     if (!server[t]) return;
     const map = new Map(DB[t].map(r => [r.id, r]));
     server[t].forEach(sr => {
@@ -506,13 +527,16 @@ function mergeServer(server) {
 }
 function coerceRow(table, r) {
   const o = Object.assign({}, r);
-  ['step','weight','reps','scheme','sortOrder','updated','ts','duration','rest','number'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
+  ['step','weight','reps','scheme','sortOrder','updated','ts','duration','rest','number','round'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
   ['inverted','archived','deleted','warmup'].forEach(k => { if (typeof o[k] === 'string') o[k] = (o[k] === 'true' || o[k] === 'TRUE'); });
+  // list-valued cells come back from the Sheet as JSON text
+  const asList = v => { if (typeof v === 'string') { try { v = v ? JSON.parse(v) : []; } catch (e) { v = []; } } return Array.isArray(v) ? v : []; };
   if (table === 'Workouts') {
     if (o.date) o.date = dateKey(o.date);
-    if (typeof o.plannedEx === 'string') { try { o.plannedEx = o.plannedEx ? JSON.parse(o.plannedEx) : []; } catch (e) { o.plannedEx = []; } }
-    if (!Array.isArray(o.plannedEx)) o.plannedEx = [];
+    o.plannedEx = asList(o.plannedEx);
+    o.circuits = asList(o.circuits);
   }
+  if (table === 'Circuits') o.stations = asList(o.stations);
   return o;
 }
 
@@ -544,8 +568,13 @@ function renderPlan() {
   if (!ws.length) { list.appendChild(el('div', { class: 'empty', text: 'No workouts yet. Tap “New workout” to plan one.' })); return; }
   ws.slice(0, 40).forEach(w => {
     const sets = setsForWorkout(w.id);
-    const exCount = new Set(sets.map(s => s.exerciseId)).size;
+    const exCount = new Set(sets.filter(s => !s.circuitId).map(s => s.exerciseId)).size;
+    const nCirc = (w.circuits || []).length;
     const planned = (w.plannedEx || []).length;
+    const summary = [];
+    if (exCount) summary.push(exCount + ' exercise' + (exCount === 1 ? '' : 's'));
+    if (nCirc) summary.push(nCirc + ' circuit' + (nCirc === 1 ? '' : 's'));
+    if (sets.length) summary.push(sets.length + ' sets logged');
     const card = el('div', { class: 'card tappable', onclick: () => openWorkout(w.id) }, [
       el('div', { class: 'row' }, [
         el('strong', { text: fmtDate(w.date) }),
@@ -562,7 +591,7 @@ function renderPlan() {
         } }),
       ]),
       el('div', { class: 'small muted', style: 'margin-top:6px',
-        text: sets.length ? (exCount + ' exercise' + (exCount === 1 ? '' : 's') + ' · ' + sets.length + ' sets logged')
+        text: (sets.length || nCirc) ? summary.join(' · ')
                           : (planned ? (planned + ' exercise' + (planned === 1 ? '' : 's') + ' planned') : 'Empty') }),
     ]);
     list.appendChild(card);
@@ -605,25 +634,36 @@ function renderLog() {
   const lastTs = {};
   const added = ADDED[w.id] || {};
   setsForWorkout(w.id).forEach(s => {
+    if (s.circuitId) return;   // circuit sets live inside their circuit block, not as exercise cards
     if (!order.includes(s.exerciseId)) order.push(s.exerciseId);
     lastTs[s.exerciseId] = Math.max(lastTs[s.exerciseId] || 0, s.ts || 0);
   });
   const keyOf = id => Math.max(added[id] || 0, lastTs[id] || 0);
-  order.sort((a, b) => keyOf(b) - keyOf(a)); // stable: ties keep planned order
 
-  // action buttons sit directly under the current exercise; finished ones drop below
+  // exercises and circuits compete for the top spot on the same rule
+  const items = order.map(id => ({ kind: 'ex', id: id, key: keyOf(id) }));
+  (w.circuits || []).forEach(c => {
+    let key = c.at || 0;
+    circuitSets(w, c).forEach(s => { key = Math.max(key, s.ts || 0); });
+    items.push({ kind: 'circuit', c: c, key: key });
+  });
+  items.sort((a, b) => b.key - a.key); // stable: ties keep planned order
+  const drawItem = it => it.kind === 'ex' ? exerciseLogCard(w, it.id) : circuitCard(w, it.c);
+
+  // action buttons sit directly under the current exercise/circuit; finished ones drop below
   const actions = el('div', {}, [
     el('button', { class: 'btn block ghost', text: '+ Add exercise to session', onclick: () => addExerciseToWorkout(w) }),
+    el('button', { class: 'btn block ghost', style: 'margin-top:10px', text: '🔁 Add circuit', onclick: () => addCircuitModal(w) }),
     el('button', { class: 'btn block', style: 'margin-top:10px', text: '📝 Edit details / notes', onclick: () => newWorkoutModal(w) }),
   ]);
 
-  if (!order.length) {
+  if (!items.length) {
     body.appendChild(el('div', { class: 'empty', text: 'No exercises yet — add one below.' }));
     body.appendChild(actions);
   } else {
-    body.appendChild(exerciseLogCard(w, order[0]));        // current exercise, on top
+    body.appendChild(drawItem(items[0]));                  // current exercise / circuit, on top
     body.appendChild(actions);                             // + add / edit, right beneath
-    order.slice(1).forEach(exId => body.appendChild(exerciseLogCard(w, exId))); // completed, below
+    items.slice(1).forEach(it => body.appendChild(drawItem(it))); // completed, below
   }
 }
 
@@ -641,7 +681,7 @@ function setDetailHtml(exercise, s) {
 function exerciseLogCard(w, exId) {
   const exercise = exById(exId);
   if (!exercise) return el('span');
-  const sets = setsForWorkout(w.id).filter(s => s.exerciseId === exId)
+  const sets = setsForWorkout(w.id).filter(s => s.exerciseId === exId && !s.circuitId)
     .sort((a, b) => (a.ts || 0) - (b.ts || 0));
   const card = el('div', { class: 'card' });
   card.appendChild(el('div', { class: 'row' }, [
@@ -697,28 +737,301 @@ function duplicateSet(w, exercise, grp) {
 }
 
 // ============================================================
+//  CIRCUITS — rounds-based: station 1 → 2 → 3, then round 2 …
+//  A circuit lives on its workout (w.circuits); its sets carry circuitId + round,
+//  and are kept out of each exercise's own Heavy/Light history.
+// ============================================================
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function peopleFor(w) { return w.type === 'together' ? PEOPLE.slice() : [w.participants || 'Neil']; }
+function circuitKey(c) { return (c.stations || []).join('|'); }
+function circuitAutoName(stations) {
+  const names = (stations || []).map(id => { const e = exById(id); return e ? e.name : '?'; });
+  return names.length <= 4 ? names.join(' + ') : names.slice(0, 4).join(' + ') + ' +' + (names.length - 4);
+}
+function circuitName(c) { return (c.name && c.name.trim()) || circuitAutoName(c.stations); }
+function circuitSets(w, c) { return setsForWorkout(w.id).filter(s => s.circuitId === c.id); }
+// logged rounds in order: [{ n: storedRoundNumber, sets: [...] }]
+function circuitRounds(w, c) {
+  const by = {};
+  circuitSets(w, c).forEach(s => { (by[s.round] = by[s.round] || []).push(s); });
+  return Object.keys(by).map(Number).sort((a, b) => a - b).map(n => ({ n: n, sets: by[n] }));
+}
+function lastCircuitSet(exId, person) {
+  return DB.Sets.filter(s => s.circuitId && s.exerciseId === exId && s.person === person && !s.deleted)
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
+}
+// where a station starts before it has been done in this circuit: the last time it was
+// done in any circuit, else its last straight-set weight (reps reset to 10), else defaults
+function stationStartVals(exr, person) {
+  const other = person === 'Neil' ? 'Simon' : 'Neil';
+  const cs = lastCircuitSet(exr.id, person) || lastCircuitSet(exr.id, other);
+  if (cs) return valsFromSet(exr, cs);
+  const ss = lastSet(exr.id, person) || lastSet(exr.id, other);
+  if (ss) { const v = valsFromSet(exr, ss); if (!isSchemeless(exr)) v.reps = 10; return v; }
+  return defaultVals(exr);
+}
+// the round being set up: last round's values (or the station's starting values for round 1)
+function pendingFor(w, c) {
+  if (PENDING[c.id]) return PENDING[c.id];
+  const people = peopleFor(w);
+  const rounds = circuitRounds(w, c);
+  const last = rounds.length ? rounds[rounds.length - 1] : null;
+  const p = {};
+  (c.stations || []).forEach(exId => {
+    const exr = exById(exId); if (!exr) return;
+    p[exId] = {};
+    people.forEach(person => {
+      const s = last && last.sets.find(x => x.exerciseId === exId && x.person === person);
+      p[exId][person] = s ? valsFromSet(exr, s) : stationStartVals(exr, person);
+    });
+  });
+  PENDING[c.id] = p;
+  return p;
+}
+// one value if everyone did the same, otherwise each person's own
+function stationDetailHtml(exr, rowByPerson, people) {
+  const d = people.map(p => rowByPerson[p] ? setDetailHtml(exr, rowByPerson[p]) : '');
+  if (d.every(x => x === d[0])) return d[0] || '—';
+  return people.map((p, i) => {
+    const pl = p.toLowerCase();
+    return d[i] ? '<span class="pdot dot-' + pl + '">●</span><b class="dot-' + pl + '">' + p + '</b> ' + d[i] : '';
+  }).join('  ');
+}
+function roundSummaryHtml(c, sets, people) {
+  return (c.stations || []).map(exId => {
+    const exr = exById(exId); if (!exr) return '';
+    const by = {}; people.forEach(p => { by[p] = sets.find(s => s.exerciseId === exId && s.person === p) || null; });
+    return '<span class="muted">' + esc(exr.name) + '</span> ' + stationDetailHtml(exr, by, people);
+  }).filter(Boolean).join(' <span class="muted">·</span> ');
+}
+
+function circuitCard(w, c) {
+  const people = peopleFor(w);
+  const rounds = circuitRounds(w, c);
+  const pend = pendingFor(w, c);
+  const nextNo = rounds.length + 1;
+  const card = el('div', { class: 'card' });
+  card.appendChild(el('div', { class: 'row' }, [
+    el('strong', { style: 'min-width:0', text: '🔁 ' + circuitName(c) }),
+    el('span', { class: 'spacer' }),
+    el('button', { class: 'iconbtn', style: 'width:32px;height:32px;font-size:15px;flex:none', html: '🗑', title: 'Remove circuit from this workout', onclick: () => removeCircuit(w, c) }),
+  ]));
+
+  // finished rounds: one compact line each
+  rounds.forEach((r, i) => {
+    card.appendChild(el('div', { class: 'circ-round' }, [
+      el('span', { class: 'rn', text: 'R' + (i + 1) }),
+      el('div', { class: 'grow', html: roundSummaryHtml(c, r.sets, people) }),
+      el('button', { class: 'iconbtn', style: 'width:30px;height:30px;font-size:13px;flex:none', html: '✕', title: 'Delete round',
+        onclick: () => { r.sets.forEach(s => { s.deleted = true; upsert('Sets', s); }); delete PENDING[c.id]; renderLog(); } }),
+    ]));
+  });
+
+  // the round you're about to do — pre-filled, tap a station to change it
+  const box = el('div', { class: 'circ-pending' });
+  box.appendChild(el('div', { class: 'small muted', style: 'margin-bottom:4px', text: 'Round ' + nextNo + ' — tap a station to change it' }));
+  (c.stations || []).forEach((exId, i) => {
+    const exr = exById(exId); if (!exr) return;
+    const rows = {};
+    people.forEach(p => { const v = pend[exId] && pend[exId][p]; rows[p] = v ? buildSetRow(exr, v, {}) : null; });
+    box.appendChild(el('div', { class: 'circ-station' + (i === 0 ? ' first' : ''), onclick: () => editStation(w, c, exr, nextNo) }, [
+      el('span', { class: 'num', text: String(i + 1) }),
+      el('div', { class: 'grow' }, [
+        el('div', { text: exr.name }),
+        el('div', { class: 'small', html: stationDetailHtml(exr, rows, people) }),
+      ]),
+      el('span', { class: 'muted', text: '›' }),
+    ]));
+  });
+  box.appendChild(el('button', { class: 'btn block', style: 'margin-top:10px', text: '✓ Log round ' + nextNo, onclick: () => logCircuitRound(w, c) }));
+  card.appendChild(box);
+  return card;
+}
+
+function editStation(w, c, exr, roundNo) {
+  const people = peopleFor(w);
+  const cur = pendingFor(w, c)[exr.id];
+  const vals = {}; people.forEach(p => { vals[p] = Object.assign({}, cur[p]); });
+  const split = people.length > 1 && JSON.stringify(vals[people[0]]) !== JSON.stringify(vals[people[1]]);
+  addSetModal(w, exr, { title: 'Round ' + roundNo + ' · ' + exr.name, vals: vals, split: split,
+    onSave: out => { Object.keys(out).forEach(p => { cur[p] = out[p]; }); renderLog(); } });
+}
+
+function logCircuitRound(w, c) {
+  const people = peopleFor(w);
+  const pend = pendingFor(w, c);
+  const rounds = circuitRounds(w, c);
+  const storedNo = rounds.length ? rounds[rounds.length - 1].n + 1 : 1;   // stored numbers keep counting past deleted rounds
+  const ts0 = Date.now();
+  (c.stations || []).forEach((exId, i) => {
+    const exr = exById(exId); if (!exr) return;
+    people.forEach(person => {
+      const v = pend[exId] && pend[exId][person]; if (!v) return;
+      upsert('Sets', buildSetRow(exr, v, { id: uid(), workoutId: w.id, exerciseId: exId, person: person,
+        circuitId: c.id, round: storedNo, ts: ts0 + i, warmup: false, deleted: false, updated: 0 }));
+    });
+  });
+  delete PENDING[c.id];   // next round starts from the one just logged
+  renderLog(); toast('Round ' + (rounds.length + 1) + ' logged');
+}
+
+function removeCircuit(w, c) {
+  const sets = circuitSets(w, c);
+  if (sets.length && !confirm('Remove this circuit and its ' + circuitRounds(w, c).length + ' logged round(s) from this workout?')) return;
+  sets.forEach(s => { s.deleted = true; upsert('Sets', s); });
+  w.circuits = (w.circuits || []).filter(x => x.id !== c.id);
+  delete PENDING[c.id];
+  upsert('Workouts', w); renderLog(); toast('Circuit removed');
+}
+
+function startCircuit(w, stations, name) {
+  const c = { id: uid(), name: (name || '').trim(), stations: stations.slice(), at: Date.now() };
+  w.circuits = (w.circuits || []).concat([c]);
+  upsert('Workouts', w);
+  closeModal(); renderLog(); toast('Circuit added');
+}
+
+// pick a saved circuit, or build one: exercises in the order you do them
+function addCircuitModal(w, state) {
+  state = state || { stations: [], saveAs: false, name: '' };
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', { text: '🔁 Add a circuit' }));
+  m.appendChild(el('div', { class: 'small muted', text: 'Pick the exercises in the order you do them. Each round goes through all of them, then you start the next round.' }));
+
+  const saved = DB.Circuits.filter(c => !c.deleted).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  if (saved.length) {
+    m.appendChild(el('h2', { class: 'section', text: 'Saved circuits' }));
+    saved.forEach(sc => {
+      const names = (sc.stations || []).map(id => (exById(id) || {}).name || '?').join(' → ');
+      m.appendChild(el('div', { class: 'exrow' }, [
+        el('div', { class: 'grow' }, [el('div', { text: sc.name }), el('div', { class: 'tiny muted', text: names })]),
+        el('button', { class: 'btn sm', text: 'Use', onclick: () => startCircuit(w, sc.stations, sc.name) }),
+        el('button', { class: 'iconbtn', style: 'width:32px;height:32px;font-size:13px;flex:none', html: '✕', title: 'Delete saved circuit', onclick: () => {
+          if (!confirm('Delete the saved circuit "' + sc.name + '"? Past workouts keep it.')) return;
+          sc.deleted = true; upsert('Circuits', sc); addCircuitModal(w, state);
+        } }),
+      ]));
+    });
+  }
+
+  m.appendChild(el('h2', { class: 'section', text: saved.length ? 'Or build a new one' : 'Build your circuit' }));
+  const listBox = el('div'); m.appendChild(listBox);
+  const cbs = {};
+  const small = 'width:32px;height:32px;font-size:13px;flex:none';
+  function move(i, d) {
+    const j = i + d; if (j < 0 || j >= state.stations.length) return;
+    const t = state.stations[i]; state.stations[i] = state.stations[j]; state.stations[j] = t; drawList();
+  }
+  function drawList() {
+    listBox.innerHTML = '';
+    if (!state.stations.length) { listBox.appendChild(el('div', { class: 'small muted', style: 'padding:6px 0', text: 'No stations yet — tick exercises below.' })); return; }
+    state.stations.forEach((id, i) => {
+      const e = exById(id);
+      listBox.appendChild(el('div', { class: 'exrow' }, [
+        el('span', { class: 'muted', style: 'width:20px', text: String(i + 1) }),
+        el('div', { class: 'grow', text: e ? e.name : '?' }),
+        el('button', { class: 'iconbtn', style: small, text: '▲', title: 'Move up', onclick: () => move(i, -1) }),
+        el('button', { class: 'iconbtn', style: small, text: '▼', title: 'Move down', onclick: () => move(i, 1) }),
+        el('button', { class: 'iconbtn', style: small, html: '✕', title: 'Remove', onclick: () => { state.stations = state.stations.filter(x => x !== id); if (cbs[id]) cbs[id].checked = false; drawList(); } }),
+      ]));
+    });
+  }
+  drawList();
+
+  const nameIn = el('input', { type: 'text', placeholder: 'Optional — needed if you want to save it', value: state.name });
+  nameIn.addEventListener('input', () => { state.name = nameIn.value; });
+  m.appendChild(el('label', { class: 'field', style: 'margin-top:12px' }, [el('span', { text: 'Circuit name' }), nameIn]));
+  const saveCb = el('input', { type: 'checkbox' }); saveCb.checked = state.saveAs;
+  saveCb.addEventListener('change', () => { state.saveAs = saveCb.checked; });
+  m.appendChild(el('label', { class: 'checkline', style: 'border:none' }, [saveCb, el('span', { text: 'Save as a reusable circuit' })]));
+
+  m.appendChild(el('h2', { class: 'section', text: 'Exercises' }));
+  byCategory().forEach(([cat, items]) => {
+    m.appendChild(el('div', { class: 'small muted', style: 'margin-top:8px', text: cat }));
+    items.forEach(e => {
+      const cb = el('input', { type: 'checkbox' }); cb.checked = state.stations.includes(e.id); cbs[e.id] = cb;
+      cb.addEventListener('change', () => {
+        if (cb.checked) { if (!state.stations.includes(e.id)) state.stations.push(e.id); }
+        else state.stations = state.stations.filter(x => x !== e.id);
+        drawList();
+      });
+      m.appendChild(el('label', { class: 'checkline' }, [cb, el('span', { text: e.name }), el('span', { class: 'spacer' }), el('span', { class: 'tiny muted', text: e.weightType })]));
+    });
+  });
+  m.appendChild(el('button', { class: 'btn block ghost', style: 'margin-top:10px', text: '+ Create brand-new exercise',
+    onclick: () => exerciseModal(null, newId => { state.stations.push(newId); addCircuitModal(w, state); }) }));
+
+  m.appendChild(el('div', { class: 'stickybar row', style: 'gap:10px' }, [
+    el('button', { class: 'btn ghost', style: 'flex:1', text: 'Cancel', onclick: closeModal }),
+    el('button', { class: 'btn', style: 'flex:2', text: 'Start circuit', onclick: () => {
+      if (state.stations.length < 2) { toast('Pick at least 2 exercises'); return; }
+      const nm = state.name.trim();
+      if (state.saveAs) {
+        if (!nm) { toast('Give it a name to save it'); return; }
+        const dupe = DB.Circuits.find(c => !c.deleted && (c.name || '').trim().toLowerCase() === nm.toLowerCase());
+        if (dupe) { dupe.stations = state.stations.slice(); upsert('Circuits', dupe); }
+        else upsert('Circuits', { id: uid(), name: nm, stations: state.stations.slice(), deleted: false, updated: 0 });
+      }
+      startCircuit(w, state.stations, nm);
+    } }),
+  ]));
+  openModal();
+}
+
+// ============================================================
 //  ADD SET MODAL  (the fast-entry heart of the app)
 // ============================================================
+// last straight set (circuit sets are kept out of exercise history on purpose)
 function lastSet(exId, person, scheme) {
-  const all = DB.Sets.filter(s => s.exerciseId === exId && s.person === person && !s.deleted
+  const all = DB.Sets.filter(s => s.exerciseId === exId && s.person === person && !s.deleted && !s.circuitId
       && (scheme === undefined || Number(s.scheme) === Number(scheme)))
     .sort((a, b) => (b.ts || 0) - (a.ts || 0));
   return all[0];
 }
-function addSetModal(w, exercise) {
+
+// A stored set <-> the "values" object the entry controls edit. Shared by the
+// normal Add Set flow and by circuit stations.
+function defaultVals(exr) {
+  const t = exr.weightType;
+  if (t === 'sprint') return { duration: 15, rest: 30, number: 4 };
+  if (isBodyweight(t)) return { weight: 0, reps: isTimed(t) ? 30 : 10, loadType: 'plate' };
+  if (isCardio(t)) return { durMin: 10, durSec: 0, setting: 1 };
+  return { weight: defaultWeight(exr), reps: 10 };
+}
+function valsFromSet(exr, s) {
+  const t = exr.weightType;
+  if (t === 'sprint') return { duration: Number(s.duration) || 15, rest: Number(s.rest) || 30, number: Number(s.number) || 4 };
+  if (isBodyweight(t)) return { weight: Number(s.weight) || 0, reps: Number(s.reps) || 0, loadType: 'plate' };
+  if (isCardio(t)) { const d = Number(s.duration) || 0; return { durMin: Math.floor(d / 60), durSec: d % 60, setting: Number(s.weight) || 0 }; }
+  return { weight: Number(s.weight) || 0, reps: Number(s.reps) || 0 };
+}
+// fill in the stored fields for a set from entry values; base carries id/workout/person/ts/etc.
+function buildSetRow(exr, v, base) {
+  const t = exr.weightType;
+  if (t === 'sprint') return Object.assign(base, { scheme: '', weight: 0, reps: 0,
+    duration: Math.round(v.duration), rest: Math.round(v.rest), number: Math.round(v.number) });
+  if (isBodyweight(t)) return Object.assign(base, { scheme: '', weight: round2(v.weight), reps: Math.round(v.reps) });
+  if (isCardio(t)) return Object.assign(base, { scheme: '', weight: round2(v.setting), reps: 0,
+    duration: Math.max(0, Math.round(v.durMin)) * 60 + Math.max(0, Math.round(v.durSec)) });
+  return Object.assign(base, { scheme: base.scheme === undefined ? '' : base.scheme, weight: round2(v.weight), reps: Math.round(v.reps) });
+}
+
+// ctx (optional) turns this into the circuit "change a station" editor:
+//   { title, vals: {person: values}, split, onSave(valuesByPerson) }
+function addSetModal(w, exercise, ctx) {
   const solo = w.type !== 'together';
   const soloPerson = solo ? (w.participants || 'Neil') : null;
   const isSprint = exercise.weightType === 'sprint';
   const bw = isBodyweight(exercise.weightType);
   const timed = isTimed(exercise.weightType);
   const cardio = isCardio(exercise.weightType);
-  const schemeless = isSprint || bw || cardio;
+  const schemeless = isSprint || bw || cardio || !!ctx;   // circuits have no Heavy/Light
   const prev = lastSet(exercise.id, 'Neil') || lastSet(exercise.id, 'Simon');
   let scheme = prev ? Number(prev.scheme) : 5;
-  let split = false;
+  let split = ctx ? !!ctx.split : false;
   let warmup = false;
   // working values per person
-  const vals = {
+  const vals = ctx ? ctx.vals : {
     Neil:  pickStart(exercise, 'Neil'),
     Simon: pickStart(exercise, 'Simon'),
   };
@@ -747,7 +1060,7 @@ function addSetModal(w, exercise) {
   const m = $('#modal');
   function draw() {
     m.innerHTML = '';
-    m.appendChild(el('h3', { text: (isSprint ? 'Add sprints · ' : 'Add set · ') + exercise.name }));
+    m.appendChild(el('h3', { text: ctx ? ctx.title : ((isSprint ? 'Add sprints · ' : 'Add set · ') + exercise.name) }));
 
     // scheme (heavy/light) — not relevant for sprints or bodyweight
     if (!schemeless) m.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:14px' }, [5, 15].map(s =>
@@ -771,17 +1084,19 @@ function addSetModal(w, exercise) {
       PEOPLE.forEach(p => m.appendChild(personEntry(exercise, p, vals[p], true)));
     }
 
-    // warm-up flag — warm-up sets are excluded from Progress
-    const warmCb = el('input', { type: 'checkbox' }); warmCb.checked = warmup;
-    warmCb.addEventListener('change', () => { warmup = warmCb.checked; });
-    m.appendChild(el('label', { class: 'checkline', style: 'border:none;margin-top:8px' }, [
-      warmCb, el('span', { text: 'Warm-up set' }), el('span', { class: 'spacer' }),
-      el('span', { class: 'tiny muted', text: 'excluded from Progress' }),
-    ]));
+    // warm-up flag — warm-up sets are excluded from Progress (not offered for circuit stations)
+    if (!ctx) {
+      const warmCb = el('input', { type: 'checkbox' }); warmCb.checked = warmup;
+      warmCb.addEventListener('change', () => { warmup = warmCb.checked; });
+      m.appendChild(el('label', { class: 'checkline', style: 'border:none;margin-top:8px' }, [
+        warmCb, el('span', { text: 'Warm-up set' }), el('span', { class: 'spacer' }),
+        el('span', { class: 'tiny muted', text: 'excluded from Progress' }),
+      ]));
+    }
 
     const actions = el('div', { class: 'row', style: 'margin-top:14px;gap:10px' }, [
-      el('button', { class: 'btn ghost', style: 'flex:1', text: 'Close', onclick: closeModal }),
-      el('button', { class: 'btn', style: 'flex:2', text: 'Save set', onclick: doSave }),
+      el('button', { class: 'btn ghost', style: 'flex:1', text: ctx ? 'Cancel' : 'Close', onclick: closeModal }),
+      el('button', { class: 'btn', style: 'flex:2', text: ctx ? 'Done' : 'Save set', onclick: doSave }),
     ]);
     m.appendChild(actions);
   }
@@ -848,15 +1163,18 @@ function addSetModal(w, exercise) {
   }
 
   function doSave() {
+    if (ctx) {
+      // circuit station: hand the chosen values back instead of creating sets
+      const out = {};
+      if (solo) out[soloPerson] = vals[soloPerson];
+      else if (!split) PEOPLE.forEach(p => { out[p] = Object.assign({}, vals.Neil); });
+      else PEOPLE.forEach(p => { out[p] = vals[p]; });
+      closeModal(); ctx.onSave(out);
+      return;
+    }
     const ts = Date.now();
     function makeSet(person, v) {
-      const base = { id: uid(), workoutId: w.id, exerciseId: exercise.id, person, ts, warmup: warmup, deleted: false, updated: 0 };
-      if (isSprint) return Object.assign(base, { scheme: '', weight: 0, reps: 0,
-        duration: Math.round(v.duration), rest: Math.round(v.rest), number: Math.round(v.number) });
-      if (bw) return Object.assign(base, { scheme: '', weight: round2(v.weight), reps: Math.round(v.reps) });
-      if (cardio) return Object.assign(base, { scheme: '', weight: round2(v.setting), reps: 0,
-        duration: Math.max(0, Math.round(v.durMin)) * 60 + Math.max(0, Math.round(v.durSec)) });
-      return Object.assign(base, { scheme, weight: round2(v.weight), reps: Math.round(v.reps) });
+      return buildSetRow(exercise, v, { id: uid(), workoutId: w.id, exerciseId: exercise.id, person, ts, warmup: warmup, scheme: scheme, deleted: false, updated: 0 });
     }
     let toAdd = [];
     if (solo) toAdd = [makeSet(soloPerson, vals[soloPerson])];
@@ -1004,19 +1322,42 @@ function newWorkoutModal(existing) {
 }
 
 // ---- DASHBOARD ----
+// circuits with at least one logged round, grouped by their ordered stations
+function circuitGroups() {
+  const map = {};
+  DB.Workouts.filter(w => !w.deleted).forEach(w => (w.circuits || []).forEach(c => {
+    if (!circuitSets(w, c).length) return;
+    const k = circuitKey(c), dt = dateKey(w.date);
+    if (!map[k] || dt >= map[k].latest) map[k] = { key: k, name: circuitName(c), latest: dt };
+  }));
+  return Object.keys(map).map(k => map[k]).sort((a, b) => a.name.localeCompare(b.name));
+}
+// the circuit key when the Progress dropdown is on a circuit, else null
+function dashCircuitKey() { const v = UI.dashExerciseId || ''; return v.indexOf('circ:') === 0 ? v.slice(5) : null; }
+
 function renderDash() {
   const active = DB.Exercises.filter(e => !e.archived).sort((a, b) => a.name.localeCompare(b.name));
+  const circs = circuitGroups();
   const sel = $('#dashExercise');
   sel.innerHTML = '';
   active.forEach(e => sel.appendChild(el('option', { value: e.id, text: e.name })));
   if (!active.length) { sel.appendChild(el('option', { text: 'No exercises' })); }
-  if (!UI.dashExerciseId || !active.find(e => e.id === UI.dashExerciseId)) UI.dashExerciseId = active[0] && active[0].id;
+  if (circs.length) {
+    const og = el('optgroup', { label: 'Circuits' });
+    circs.forEach(g => og.appendChild(el('option', { value: 'circ:' + g.key, text: '🔁 ' + g.name })));
+    sel.appendChild(og);
+  }
+  const ck = dashCircuitKey();
+  const valid = ck ? circs.some(g => g.key === ck) : active.some(e => e.id === UI.dashExerciseId);
+  if (!UI.dashExerciseId || !valid) UI.dashExerciseId = active[0] && active[0].id;
   sel.value = UI.dashExerciseId || '';
   renderProgress();
 }
 function renderProgress() {
-  const exr = exById(UI.dashExerciseId);
-  $('#dashSchemeRow').style.display = isSchemeless(exr) ? 'none' : '';
+  const ck = dashCircuitKey();
+  const exr = ck ? null : exById(UI.dashExerciseId);
+  $('#dashSchemeRow').style.display = (ck || isSchemeless(exr)) ? 'none' : '';
+  $('#trendTitle').textContent = ck ? 'Rounds per session' : 'Volume trend';
   renderHistory();
   drawVolChart();
 }
@@ -1024,7 +1365,7 @@ function renderProgress() {
 // ---- history helpers ----
 function workoutDate(s) { const w = workoutById(s.workoutId); return dateKey((w && w.date) || new Date(s.ts).toISOString().slice(0, 10)); }
 function setsFor(exId, person, scheme) {
-  return DB.Sets.filter(s => s.exerciseId === exId && s.person === person && !s.deleted && !s.warmup
+  return DB.Sets.filter(s => s.exerciseId === exId && s.person === person && !s.deleted && !s.warmup && !s.circuitId
       && (scheme === undefined || Number(s.scheme) === Number(scheme)))
     .sort((a, b) => (a.ts || 0) - (b.ts || 0));
 }
@@ -1054,8 +1395,51 @@ function personHeader(p) {
 }
 
 // ---- History (the headline of the Progress tab) ----
+// every logged session of one circuit (matched by its ordered stations) for one person
+function circuitSessions(key, person) {
+  const out = [];
+  DB.Workouts.filter(w => !w.deleted).forEach(w => (w.circuits || []).forEach(c => {
+    if (circuitKey(c) !== key) return;
+    const by = {};
+    circuitSets(w, c).filter(s => s.person === person && !s.warmup).forEach(s => { (by[s.round] = by[s.round] || []).push(s); });
+    const ns = Object.keys(by).map(Number).sort((a, b) => a - b);
+    if (!ns.length) return;
+    out.push({ date: dateKey(w.date), at: c.at || 0, rounds: ns.map(n => by[n].slice().sort((a, b) => (a.ts || 0) - (b.ts || 0))) });
+  }));
+  return out.sort((a, b) => a.date.localeCompare(b.date) || a.at - b.at);
+}
+function circuitSessionHtml(label, sess, extra) {
+  const lines = sess.rounds.map((sets, i) => 'R' + (i + 1) + '  ' + sets.map(s => {
+    const exr = exById(s.exerciseId);
+    return '<span class="muted">' + esc(exr ? exr.name : '?') + '</span> ' + setListHtml([s], exr);
+  }).join(' <span class="muted">·</span> '));
+  return '<span class="muted">' + label + '</span> <span class="muted tiny">' + fmtDate(sess.date) + ' · ' + sess.rounds.length + ' round' + (sess.rounds.length === 1 ? '' : 's') + (extra || '') + '</span><br>' + lines.join('<br>');
+}
+function circuitHistoryCard(key) {
+  const g = circuitGroups().find(x => x.key === key);
+  const card = el('div', { class: 'card' });
+  card.appendChild(el('strong', { text: '🔁 ' + (g ? g.name : 'Circuit') }));
+  PEOPLE.forEach(p => {
+    const block = el('div', { class: 'exrow' }, [el('div', { class: 'grow' }, [personHeader(p)])]);
+    const info = block.firstChild;
+    const sess = circuitSessions(key, p);
+    if (!sess.length) info.appendChild(el('div', { class: 'small muted', text: 'No rounds yet' }));
+    else {
+      const last = sess[sess.length - 1];
+      let best = sess[0];
+      sess.forEach(s => { if (s.rounds.length >= best.rounds.length) best = s; });   // most rounds; a tie goes to the later one
+      info.appendChild(el('div', { class: 'small', html: circuitSessionHtml('Last Session:', last) }));
+      info.appendChild(el('div', { class: 'small', style: 'margin-top:5px', html: circuitSessionHtml('Best Effort:', best) }));
+    }
+    card.appendChild(block);
+  });
+  return card;
+}
+
 function renderHistory() {
   const box = $('#historyBox'); box.innerHTML = '';
+  const ck = dashCircuitKey();
+  if (ck) { box.appendChild(circuitHistoryCard(ck)); return; }
   const exr = exById(UI.dashExerciseId);
   if (!exr) { box.appendChild(el('div', { class: 'empty', text: 'No exercise selected.' })); return; }
   if (exr.weightType === 'sprint') { box.appendChild(sprintHistoryCard(exr)); return; }
@@ -1125,13 +1509,34 @@ function bodyweightHistoryCard(exr) {
   return card;
 }
 function drawVolChart() {
-  const exr = exById(UI.dashExerciseId);
   if (charts.vol) { charts.vol.destroy(); charts.vol = null; }
+  const ck = dashCircuitKey();
+  if (ck) {
+    // circuits: rounds completed per session
+    const roundsMap = {};
+    PEOPLE.forEach(p => circuitSessions(ck, p).forEach(s => {
+      roundsMap[s.date] = roundsMap[s.date] || {};
+      roundsMap[s.date][p] = (roundsMap[s.date][p] || 0) + s.rounds.length;
+    }));
+    const cdates = Object.keys(roundsMap).sort();
+    const ccolors = { Neil: getCss('--neil'), Simon: getCss('--simon') };
+    charts.vol = new Chart($('#chartVol'), {
+      type: 'line',
+      data: { labels: cdates.map(d => fmtDate(d)), datasets: PEOPLE.map(p => ({
+        label: p, borderColor: ccolors[p], backgroundColor: ccolors[p],
+        spanGaps: true, tension: .25, pointRadius: 3,
+        data: cdates.map(d => roundsMap[d] && roundsMap[d][p] !== undefined ? roundsMap[d][p] : null),
+      })) },
+      options: lineOpts(),
+    });
+    return;
+  }
+  const exr = exById(UI.dashExerciseId);
   if (!exr) return;
   const sprint = exr.weightType === 'sprint';
   const bw = isBodyweight(exr.weightType);
   const cardio = isCardio(exr.weightType);
-  let sets = DB.Sets.filter(s => s.exerciseId === exr.id && !s.deleted && !s.warmup);
+  let sets = DB.Sets.filter(s => s.exerciseId === exr.id && !s.deleted && !s.warmup && !s.circuitId);
   if (!isSchemeless(exr) && UI.dashScheme !== 'all') sets = sets.filter(s => Number(s.scheme) === Number(UI.dashScheme));
   const volMap = {};
   sets.forEach(s => {
