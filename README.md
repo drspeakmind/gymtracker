@@ -70,6 +70,10 @@ three steps on his phone with the same URL.
   remembered separately). **Sprints** are a special type: instead of weight × reps
   you log **duration / rest / number** (presets + manual). Each exercise card also
   has a 🗑 to remove it from the session, and *Duplicate last* to repeat a set.
+- **Cardio machines** — an exercise type that logs **duration (mm:ss) + setting**
+  instead of weight × reps. Pick *Cardio machine + gradient* for something like a
+  treadmill and it also records a **gradient %**. Progress scores a session as
+  minutes × setting (gradient is shown but isn't part of the score).
 - **Circuits** — for rounds-based work (KB swings → deadbug → OHP, then round 2…),
   tap **🔁 Add circuit** in the Log. Pick the exercises in the order you do them
   (optionally name it and tick *Save as a reusable circuit*, or pick a saved one).

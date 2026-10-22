@@ -15,7 +15,7 @@
 var TABLES = {
   Exercises: ['id', 'name', 'weightType', 'category', 'step', 'inverted', 'archived', 'sortOrder', 'updated'],
   Workouts:  ['id', 'date', 'type', 'participants', 'status', 'notes', 'plannedEx', 'circuits', 'deleted', 'updated'],
-  Sets:      ['id', 'workoutId', 'exerciseId', 'person', 'scheme', 'weight', 'reps', 'ts', 'duration', 'rest', 'number', 'warmup', 'circuitId', 'round', 'deleted', 'updated'],
+  Sets:      ['id', 'workoutId', 'exerciseId', 'person', 'scheme', 'weight', 'reps', 'ts', 'duration', 'rest', 'number', 'warmup', 'circuitId', 'round', 'gradient', 'deleted', 'updated'],
   Circuits:  ['id', 'name', 'stations', 'deleted', 'updated']   // saved, reusable circuits
 };
 

@@ -340,7 +340,10 @@ let syncTimer = null, pulling = false, pushing = false;
 
 function isBodyweight(t) { return t === 'bodyweight' || t === 'bodyweight_time'; }
 function isTimed(t) { return t === 'bodyweight_time'; }
-function isCardio(t) { return t === 'cardio'; }
+function isCardio(t) { return t === 'cardio' || t === 'cardio_gradient'; }
+function hasGradient(t) { return t === 'cardio_gradient'; }   // cardio machines that also record an incline/gradient (e.g. treadmill)
+// "2.5%" — blank for sets logged before gradient was being recorded
+function fmtGradient(s) { return (s.gradient === '' || s.gradient === undefined || s.gradient === null) ? '' : fmtNum(s.gradient) + '%'; }
 function isSchemeless(ex) { return ex && (ex.weightType === 'sprint' || isBodyweight(ex.weightType) || isCardio(ex.weightType)); }
 function fmtMMSS(sec) { sec = Math.max(0, Math.round(Number(sec) || 0)); const m = Math.floor(sec / 60), s = sec % 60; return m + ':' + String(s).padStart(2, '0'); }
 // effort score for a cardio machine: minutes × setting
@@ -527,7 +530,7 @@ function mergeServer(server) {
 }
 function coerceRow(table, r) {
   const o = Object.assign({}, r);
-  ['step','weight','reps','scheme','sortOrder','updated','ts','duration','rest','number','round'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
+  ['step','weight','reps','scheme','sortOrder','updated','ts','duration','rest','number','round','gradient'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
   ['inverted','archived','deleted','warmup'].forEach(k => { if (typeof o[k] === 'string') o[k] = (o[k] === 'true' || o[k] === 'TRUE'); });
   // list-valued cells come back from the Sheet as JSON text
   const asList = v => { if (typeof v === 'string') { try { v = v ? JSON.parse(v) : []; } catch (e) { v = []; } } return Array.isArray(v) ? v : []; };
@@ -671,7 +674,8 @@ function renderLog() {
 function setDetailHtml(exercise, s) {
   const t = exercise.weightType;
   if (t === 'sprint') return '<b>' + fmtNum(s.number) + '</b> × <b>' + fmtNum(s.duration) + 's</b> <span class="muted tiny">' + fmtNum(s.rest) + 's rest</span>';
-  if (t === 'cardio') return '<b>' + fmtMMSS(s.duration) + '</b> <span class="muted tiny">min</span> · <b>' + fmtNum(s.weight) + '</b><span class="muted tiny"> setting</span>';
+  if (isCardio(t)) return '<b>' + fmtMMSS(s.duration) + '</b> <span class="muted tiny">min</span> · <b>' + fmtNum(s.weight) + '</b><span class="muted tiny"> setting</span>'
+    + (hasGradient(t) && fmtGradient(s) ? ' · <b>' + fmtGradient(s) + '</b><span class="muted tiny"> gradient</span>' : '');
   if (isBodyweight(t)) {
     const base = Number(s.weight) > 0 ? ('BW+<b>' + fmtNum(s.weight) + '</b><span class="muted tiny">kg</span>') : '<b>BW</b>';
     return base + (isTimed(t) ? (' · <b>' + fmtNum(s.reps) + 's</b>') : (' × ' + s.reps));
@@ -732,7 +736,7 @@ function duplicateSet(w, exercise, grp) {
   const ts = Date.now();
   grp.forEach(s => upsert('Sets', { id: uid(), workoutId: w.id, exerciseId: exercise.id, person: s.person,
     scheme: s.scheme, weight: s.weight, reps: s.reps, duration: s.duration, rest: s.rest, number: s.number,
-    warmup: s.warmup, ts, deleted: false, updated: 0 }));
+    gradient: s.gradient, warmup: s.warmup, ts, deleted: false, updated: 0 }));
   renderLog(); toast('Set duplicated');
 }
 
@@ -1037,14 +1041,17 @@ function defaultVals(exr) {
   const t = exr.weightType;
   if (t === 'sprint') return { duration: 15, rest: 30, number: 4 };
   if (isBodyweight(t)) return { weight: 0, reps: isTimed(t) ? 30 : 10, loadType: 'plate' };
-  if (isCardio(t)) return { durMin: 10, durSec: 0, setting: 1 };
+  if (isCardio(t)) return Object.assign({ durMin: 10, durSec: 0, setting: 1 }, hasGradient(t) ? { gradient: 0 } : {});
   return { weight: defaultWeight(exr), reps: 10 };
 }
 function valsFromSet(exr, s) {
   const t = exr.weightType;
   if (t === 'sprint') return { duration: Number(s.duration) || 15, rest: Number(s.rest) || 30, number: Number(s.number) || 4 };
   if (isBodyweight(t)) return { weight: Number(s.weight) || 0, reps: Number(s.reps) || 0, loadType: 'plate' };
-  if (isCardio(t)) { const d = Number(s.duration) || 0; return { durMin: Math.floor(d / 60), durSec: d % 60, setting: Number(s.weight) || 0 }; }
+  if (isCardio(t)) {
+    const d = Number(s.duration) || 0;
+    return Object.assign({ durMin: Math.floor(d / 60), durSec: d % 60, setting: Number(s.weight) || 0 }, hasGradient(t) ? { gradient: Number(s.gradient) || 0 } : {});
+  }
   return { weight: Number(s.weight) || 0, reps: Number(s.reps) || 0 };
 }
 // fill in the stored fields for a set from entry values; base carries id/workout/person/ts/etc.
@@ -1054,7 +1061,8 @@ function buildSetRow(exr, v, base) {
     duration: Math.round(v.duration), rest: Math.round(v.rest), number: Math.round(v.number) });
   if (isBodyweight(t)) return Object.assign(base, { scheme: '', weight: round2(v.weight), reps: Math.round(v.reps) });
   if (isCardio(t)) return Object.assign(base, { scheme: '', weight: round2(v.setting), reps: 0,
-    duration: Math.max(0, Math.round(v.durMin)) * 60 + Math.max(0, Math.round(v.durSec)) });
+    duration: Math.max(0, Math.round(v.durMin)) * 60 + Math.max(0, Math.round(v.durSec)) },
+    hasGradient(t) ? { gradient: round2(v.gradient) } : {});
   return Object.assign(base, { scheme: base.scheme === undefined ? '' : base.scheme, weight: round2(v.weight), reps: Math.round(v.reps) });
 }
 
@@ -1091,7 +1099,8 @@ function addSetModal(w, exercise, ctx) {
     if (cardio) {
       const ls = lastSet(exr.id, p) || lastSet(exr.id, other);
       const dur = ls ? Number(ls.duration) : 600;
-      return { durMin: Math.floor(dur / 60), durSec: dur % 60, setting: ls ? Number(ls.weight) : 1 };
+      return Object.assign({ durMin: Math.floor(dur / 60), durSec: dur % 60, setting: ls ? Number(ls.weight) : 1 },
+        hasGradient(exr.weightType) ? { gradient: ls ? (Number(ls.gradient) || 0) : 0 } : {});
     }
     // prefer the last time at THIS scheme (heavy/light differ a lot), then any history
     const ls = lastSet(exr.id, p, scheme) || lastSet(exr.id, other, scheme)
@@ -1195,6 +1204,11 @@ function addSetModal(w, exercise, ctx) {
       ]));
       wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: 'Setting' }));
       wrap.appendChild(stepperControl(v, 'setting', 0.1, 0));
+      if (hasGradient(exr.weightType)) {
+        if (v.gradient === undefined) v.gradient = 0;   // a station/set that predates gradient
+        wrap.appendChild(el('div', { class: 'small muted', style: 'margin-top:12px', text: 'Gradient (%)' }));
+        wrap.appendChild(stepperControl(v, 'gradient', 0.5, 0));
+      }
     } else {
       wrap.appendChild(el('div', { class: 'small muted', text: 'Weight (kg)' }));
       wrap.appendChild(weightControl(exr, v));
@@ -1431,7 +1445,7 @@ function setListHtml(grp, exr) {
   const t = exr ? exr.weightType : '';
   return grp.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)).map(s => {
     if (t === 'sprint') return '<b>' + fmtNum(s.number) + '</b>×' + fmtNum(s.duration) + 's';
-    if (t === 'cardio') return '<b>' + fmtMMSS(s.duration) + '</b>@' + fmtNum(s.weight);
+    if (isCardio(t)) return '<b>' + fmtMMSS(s.duration) + '</b>@' + fmtNum(s.weight) + (hasGradient(t) && fmtGradient(s) ? ' ↗' + fmtGradient(s) : '');
     if (isBodyweight(t)) {
       const base = Number(s.weight) > 0 ? ('BW+' + fmtNum(s.weight)) : 'BW';
       return isTimed(t) ? ('<b>' + base + '</b>·' + fmtNum(s.reps) + 's') : ('<b>' + base + '</b>×' + s.reps);
@@ -1661,7 +1675,7 @@ function exerciseModal(existing, onCreate) {
   const catSel = el('select', {}, cats.map(c => el('option', { value: c, text: c }))); catSel.value = e.category || 'Chest';
   m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Category' }), catSel]));
 
-  const types = [['plate', 'Plate-loaded / barbell (±2.5 kg)'], ['machine', 'Machine stack (+micro plates)'], ['dumbbell', 'Dumbbell singles'], ['kettlebell', 'Kettlebell'], ['sprint', 'Sprints (duration / rest / number)'], ['bodyweight', 'Bodyweight — reps (+ optional load)'], ['bodyweight_time', 'Bodyweight — hold time (+ optional load)'], ['cardio', 'Cardio machine (duration + setting)']];
+  const types = [['plate', 'Plate-loaded / barbell (±2.5 kg)'], ['machine', 'Machine stack (+micro plates)'], ['dumbbell', 'Dumbbell singles'], ['kettlebell', 'Kettlebell'], ['sprint', 'Sprints (duration / rest / number)'], ['bodyweight', 'Bodyweight — reps (+ optional load)'], ['bodyweight_time', 'Bodyweight — hold time (+ optional load)'], ['cardio', 'Cardio machine (duration + setting)'], ['cardio_gradient', 'Cardio machine + gradient (e.g. treadmill)']];
   const typeSel = el('select', {}, types.map(t => el('option', { value: t[0], text: t[1] }))); typeSel.value = e.weightType;
   m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Type' }), typeSel]));
 
