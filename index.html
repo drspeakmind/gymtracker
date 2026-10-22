@@ -333,7 +333,7 @@ let DB = { Exercises: [], Workouts: [], Sets: [], Circuits: [] };
 let PENDING = {};         // circuitId -> { exerciseId: { person: values } } — the round being set up, not yet logged
 let CFG = { scriptUrl: '', activeWorkoutId: null };
 let QUEUE = [];           // pending {table,row} upserts
-let UI = { tab: 'plan', dashScheme: 'all', dashExerciseId: null };
+let UI = { tab: 'plan', dashScheme: 'all', dashExerciseId: null, planShown: 40 };
 let ADDED = {};           // local-only: { workoutId: { exerciseId: addedTimestamp } } for Log ordering
 let charts = { main: null, vol: null };
 let syncTimer = null, pulling = false, pushing = false;
@@ -386,7 +386,10 @@ function fmtDate(d) {
   if (key === todayISO()) return 'Today';
   const dt = new Date(key + 'T00:00:00');
   if (isNaN(dt)) return key;
-  return dt.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  // dates from an earlier year carry the year, so a long history isn't ambiguous
+  const opts = { weekday: 'short', day: 'numeric', month: 'short' };
+  if (dt.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return dt.toLocaleDateString(undefined, opts);
 }
 function exById(id) { return DB.Exercises.find(e => e.id === id); }
 function workoutById(id) { return DB.Workouts.find(w => w.id === id); }
@@ -569,7 +572,7 @@ function renderPlan() {
   list.innerHTML = '';
   const ws = DB.Workouts.filter(w => !w.deleted).sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.updated - a.updated));
   if (!ws.length) { list.appendChild(el('div', { class: 'empty', text: 'No workouts yet. Tap “New workout” to plan one.' })); return; }
-  ws.slice(0, 40).forEach(w => {
+  ws.slice(0, UI.planShown).forEach(w => {
     const sets = setsForWorkout(w.id);
     const exCount = new Set(sets.filter(s => !s.circuitId).map(s => s.exerciseId)).size;
     const nCirc = (w.circuits || []).length;
@@ -599,6 +602,12 @@ function renderPlan() {
     ]);
     list.appendChild(card);
   });
+  // everything is kept — the list just loads in pages so it stays quick
+  if (ws.length > UI.planShown) {
+    const more = ws.length - UI.planShown;
+    list.appendChild(el('button', { class: 'btn block ghost', text: 'Show older workouts (' + more + ' more)',
+      onclick: () => { UI.planShown += 40; renderPlan(); } }));
+  }
 }
 
 // ---- LOG ----
