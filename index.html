@@ -295,6 +295,8 @@ function ex(name, weightType, category, step, inverted) {
 // (so it never duplicates across devices). Adding more here is safe.
 const DEFAULT_EXERCISES = [
   { id: 'ex-assault-bike-sprints', name: 'Assault bike sprints', weightType: 'sprint', category: 'Cardio', step: 0, inverted: false },
+  // the Pec Fly machine set to reverse: its own exercise so its weights stay separate from the chest fly
+  { id: 'ex-rear-delt-fly', name: 'Rear delt fly', weightType: 'machine', category: 'Shoulders', step: 5, inverted: false },
 ];
 function ensureDefaultExercises() {
   DEFAULT_EXERCISES.forEach((d, i) => {
@@ -305,6 +307,38 @@ function ensureDefaultExercises() {
     const row = Object.assign({ archived: false, sortOrder: DB.Exercises.length + i, updated: Date.now() }, d);
     DB.Exercises.push(row);
     enqueue('Exercises', row, true);
+  });
+}
+// The agreed training plan, pre-built as routines. Exercises are looked up BY NAME in your own
+// library (so it uses your real rows), and a routine is only created once all of them exist —
+// it's retried after each sync. Fixed ids mean both phones make the same row, and a routine you
+// delete or edit is never recreated or overwritten. day: 1 = Mon … 0 = Sun.
+const DEFAULT_ROUTINES = [
+  { id: 'routine-upper-a', name: 'Upper A', day: 1, items: [
+    ['Flat bench', 3, 8, 10], ['PL Incline', 3, 8, 10], ['Assisted pull-ups', 3, 8, 10], ['PL Seated row', 3, 8, 10],
+    ['OHP (barbell)', 3, 8, 10], ["Neil's FSM", 3, 8, 10], ['Tricep machine', 3, 8, 10] ] },
+  { id: 'routine-functional', name: 'Functional', day: 3, items: [
+    ['Push up', 3, 10, 15], ['Assisted pull-ups', 3, 8, 10], ['KB squats', 3, 12, 15], ['Good mornings', 3, 12, 15],
+    ['Calf Raise (KB)', 3, 15, 20], ['Bicep curl', 3, 12, 15], ['PL Tricep', 3, 12, 15] ] },
+  { id: 'routine-upper-b', name: 'Upper B', day: 4, items: [
+    ['Incline bench', 3, 8, 10], ['Lat Pulldown', 3, 8, 10], ['T-bar (PL Machine)', 3, 8, 10], ['OHP press (DB singles)', 3, 8, 10],
+    ['Rear delt fly', 3, 8, 10], ["Neil's FSM", 3, 8, 10], ['Bicep machine', 3, 8, 10] ] },
+];
+function nameKey(s) { return String(s || '').replace(/[’‘]/g, "'").trim().toLowerCase(); }
+function ensureDefaultRoutines() {
+  if (!Array.isArray(DB.Routines)) DB.Routines = [];
+  DEFAULT_ROUTINES.forEach(d => {
+    if (DB.Routines.some(r => r.id === d.id)) return;                                              // already made (even if since deleted)
+    if (DB.Routines.some(r => !r.deleted && nameKey(r.name) === nameKey(d.name))) return;        // you built one by hand
+    const items = [];
+    for (const it of d.items) {
+      const ex = DB.Exercises.find(e => !e.archived && nameKey(e.name) === nameKey(it[0]));
+      if (!ex) return;                                                                            // library not complete yet — try again later
+      items.push({ exerciseId: ex.id, sets: it[1], lo: it[2], hi: it[3] });
+    }
+    const row = { id: d.id, name: d.name, day: d.day, items: items, deleted: false, updated: Date.now() };
+    DB.Routines.push(row);
+    enqueue('Routines', row, true);
   });
 }
 function swapStation(list, from, to) { return (list || []).map(id => id === from ? to : id).filter((v, i, a) => a.indexOf(v) === i); }
@@ -467,6 +501,7 @@ function load() {
   }
   ensureDefaultExercises();  // add any built-ins missing from an existing library
   dedupeExercises();         // heal any pre-existing duplicates
+  ensureDefaultRoutines();   // the planned Upper A / Functional / Upper B
   save();
 }
 
@@ -559,7 +594,9 @@ function mergeServer(server) {
     const arr = DB[q.table], i = arr.findIndex(r => r.id === q.row.id);
     if (i >= 0) arr[i] = q.row; else arr.push(q.row);
   });
+  ensureDefaultExercises();
   dedupeExercises();  // heal duplicates that arrive via sync
+  ensureDefaultRoutines();   // the library may only just have arrived from the Sheet
 }
 function coerceRow(table, r) {
   const o = Object.assign({}, r);

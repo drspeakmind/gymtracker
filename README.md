@@ -77,7 +77,10 @@ three steps on his phone with the same URL.
   *3 × 8–10*), the hint, and a *Set 2 of 3* counter; the rest wait under **Up next**
   (tap one to jump to it) and finished ones drop below. Each exercise's hint uses its
   own range, so lighter days can use higher ranges. Routines sync via a `Routines` tab
-  in the Sheet (needs the `Code.gs` redeploy).
+  in the Sheet (needs the `Code.gs` redeploy). **Upper A, Functional and Upper B come
+  pre-built** (`DEFAULT_ROUTINES` in `index.html`, using exercises found by name in your
+  library, plus a *Rear delt fly* exercise); edit or delete them freely — they're never
+  recreated or overwritten once they exist.
 - **8–10 programme & hints** — new sets default to the **8–10** rep range (Heavy 5 /
   Light 15 sit behind a link, and every earlier session stays exactly as logged). Each
   exercise card shows a hint per person from your last 8–10 session: stay and aim for
