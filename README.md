@@ -70,6 +70,15 @@ three steps on his phone with the same URL.
   remembered separately). **Sprints** are a special type: instead of weight × reps
   you log **duration / rest / number** (presets + manual). Each exercise card also
   has a 🗑 to remove it from the session, and *Duplicate last* to repeat a set.
+- **8–10 programme & hints** — new sets default to the **8–10** rep range (Heavy 5 /
+  Light 15 sit behind a link, and every earlier session stays exactly as logged). Each
+  exercise card shows a hint per person from your last 8–10 session: stay and aim for
+  10 on every set, **go up** once every set hits 10 (smallest +1.1 kg step on
+  machines, next size for dumbbells/kettlebells, less assistance on assisted
+  pull-ups), or flag a set under 8. With no 8–10 history yet it suggests a starting
+  weight from your recent sessions. The weight pre-fills from the hint, then carries on
+  from what you did earlier that day. Progress shows the current programme first, with
+  the older schemes under *Earlier*.
 - **Who did it?** — in a together-workout, *Add set* asks who did it: **Neil + Simon**,
   **Neil only** or **Simon only**, so nobody has to log a fake placeholder when the
   other sat an exercise out. It's remembered for that exercise for the rest of the
