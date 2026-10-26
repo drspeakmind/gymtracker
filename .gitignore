@@ -3,3 +3,6 @@
 
 # Source image kept locally; the site only needs the processed avatars.png
 avatars-raw.png
+
+# temp files left behind by editing tools
+*.tmp.*

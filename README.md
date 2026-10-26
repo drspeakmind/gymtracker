@@ -70,6 +70,14 @@ three steps on his phone with the same URL.
   remembered separately). **Sprints** are a special type: instead of weight × reps
   you log **duration / rest / number** (presets + manual). Each exercise card also
   has a 🗑 to remove it from the session, and *Duplicate last* to repeat a set.
+- **Routines** — on the Plan tab, **+ New routine** builds a named workout (Upper A,
+  Functional…): pick exercises in order, then set **sets and a rep range** for each, and
+  an optional usual day. On that day the Plan tab shows a **Today** card with a one-tap
+  Start. A routine workout shows the current exercise on top with its target (e.g.
+  *3 × 8–10*), the hint, and a *Set 2 of 3* counter; the rest wait under **Up next**
+  (tap one to jump to it) and finished ones drop below. Each exercise's hint uses its
+  own range, so lighter days can use higher ranges. Routines sync via a `Routines` tab
+  in the Sheet (needs the `Code.gs` redeploy).
 - **8–10 programme & hints** — new sets default to the **8–10** rep range (Heavy 5 /
   Light 15 sit behind a link, and every earlier session stays exactly as logged). Each
   exercise card shows a hint per person from your last 8–10 session: stay and aim for

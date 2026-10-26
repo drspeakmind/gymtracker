@@ -80,6 +80,14 @@
   .pdot { font-size: 17px; vertical-align: -1px; margin-right: 3px; }
   .chartbox { position: relative; height: 240px; margin-top: 10px; }
 
+  .pill.target { color: #7dd3fc; border-color: #075985; background: #0c2a43; }
+  .pill.day { color: #a7f3d0; border-color: #065f46; }
+  .sdots { display: inline-flex; gap: 4px; } .sdots i { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--muted); display: inline-block; }
+  .sdots i.on { background: var(--good); border-color: var(--good); }
+  .step { display: inline-flex; align-items: center; gap: 4px; } .step b { min-width: 24px; text-align: center; font-size: 15px; }
+  .step i { font-style: normal; width: 30px; height: 30px; line-height: 28px; text-align: center; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line); cursor: pointer; user-select: none; }
+  .next { display: flex; align-items: center; gap: 10px; padding: 10px 2px; border-top: 1px solid var(--line); cursor: pointer; }
+  .next.first { border-top: none; } .next .num { width: 18px; text-align: center; color: var(--muted); font-size: 12px; }
   /* progression hints */
   .coach { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 9px 0 4px; font-size: 13px; }
   .coach .ln { padding: 3px 0; } .coach .ln + .ln { border-top: 1px solid var(--line); margin-top: 3px; padding-top: 6px; }
@@ -181,7 +189,11 @@
   <main>
     <!-- PLAN -->
     <section class="view" id="view-plan">
-      <button class="btn block" id="btnNewWorkout">+ New workout</button>
+      <div id="routineBox"></div>
+      <div class="row" style="gap:8px">
+        <button class="btn ghost" style="flex:1" id="btnNewWorkout">+ Blank workout</button>
+        <button class="btn ghost" style="flex:1" id="btnNewRoutine">+ New routine</button>
+      </div>
       <h2 class="section">Recent &amp; upcoming</h2>
       <div id="workoutList"></div>
     </section>
@@ -332,6 +344,13 @@ function dedupeExercises() {
       (DB.Circuits || []).forEach(c => {
         if ((c.stations || []).indexOf(dup.id) !== -1) { c.stations = swapStation(c.stations, dup.id, canon.id); upsert('Circuits', c); }
       });
+      (DB.Routines || []).forEach(r => {
+        if ((r.items || []).some(i => i.exerciseId === dup.id)) {
+          r.items = r.items.map(i => i.exerciseId === dup.id ? Object.assign({}, i, { exerciseId: canon.id }) : i)
+            .filter((i, idx, a) => a.findIndex(x => x.exerciseId === i.exerciseId) === idx);
+          upsert('Routines', r);
+        }
+      });
       dup.archived = true;
       upsert('Exercises', dup);
     });
@@ -339,7 +358,7 @@ function dedupeExercises() {
 }
 
 // ---------- state ----------
-let DB = { Exercises: [], Workouts: [], Sets: [], Circuits: [] };
+let DB = { Exercises: [], Workouts: [], Sets: [], Circuits: [], Routines: [] };
 let PENDING = {};         // circuitId -> { exerciseId: { person: values } } — the round being set up, not yet logged
 let CFG = { scriptUrl: '', activeWorkoutId: null };
 let QUEUE = [];           // pending {table,row} upserts
@@ -438,6 +457,7 @@ function load() {
   try { QUEUE = JSON.parse(localStorage.getItem('gym.queue')) || []; } catch (e) {}
   try { ADDED = JSON.parse(localStorage.getItem('gym.added')) || {}; } catch (e) {}
   if (!Array.isArray(DB.Circuits)) DB.Circuits = [];   // older saved data predates circuits
+  if (!Array.isArray(DB.Routines)) DB.Routines = [];   // ...and routines
   // Only auto-seed when there's nothing to pull from (local-only first run).
   // On a Sheet-connected device the library comes from the pull, so we don't
   // seed a fresh random set that would collide with it.
@@ -520,7 +540,7 @@ async function pullAll() {
 }
 // Last-write-wins merge by id+updated. Locally-queued rows are re-applied after.
 function mergeServer(server) {
-  ['Exercises', 'Workouts', 'Sets', 'Circuits'].forEach(t => {
+  ['Exercises', 'Workouts', 'Sets', 'Circuits', 'Routines'].forEach(t => {
     if (!server[t]) return;
     const map = new Map(DB[t].map(r => [r.id, r]));
     server[t].forEach(sr => {
@@ -543,7 +563,7 @@ function mergeServer(server) {
 }
 function coerceRow(table, r) {
   const o = Object.assign({}, r);
-  ['step','weight','reps','scheme','sortOrder','updated','ts','duration','rest','number','round','gradient'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
+  ['step','weight','reps','scheme','sortOrder','updated','ts','duration','rest','number','round','gradient','day'].forEach(k => { if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]); });
   ['inverted','archived','deleted','warmup'].forEach(k => { if (typeof o[k] === 'string') o[k] = (o[k] === 'true' || o[k] === 'TRUE'); });
   // list-valued cells come back from the Sheet as JSON text
   const asList = v => { if (typeof v === 'string') { try { v = v ? JSON.parse(v) : []; } catch (e) { v = []; } } return Array.isArray(v) ? v : []; };
@@ -553,6 +573,7 @@ function coerceRow(table, r) {
     o.circuits = asList(o.circuits);
   }
   if (table === 'Circuits') o.stations = asList(o.stations);
+  if (table === 'Routines') o.items = asList(o.items);
   return o;
 }
 
@@ -578,6 +599,7 @@ function switchTab(tab) {
 
 // ---- PLAN ----
 function renderPlan() {
+  renderRoutineBox();
   const list = $('#workoutList');
   list.innerHTML = '';
   const ws = DB.Workouts.filter(w => !w.deleted).sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.updated - a.updated));
@@ -595,6 +617,7 @@ function renderPlan() {
       el('div', { class: 'row' }, [
         el('strong', { text: fmtDate(w.date) }),
         el('span', { class: 'spacer' }),
+        routineOf(w) ? el('span', { class: 'pill target', text: routineOf(w).name }) : el('span'),
         el('span', { class: 'pill ' + (w.type === 'together' ? 'together' : 'solo'), text: w.type === 'together' ? 'Neil + Simon' : (w.participants || 'Solo') }),
         el('span', { class: 'pill ' + (w.status === 'done' ? 'done' : 'planned'), text: w.status === 'done' ? 'done' : 'planned' }),
         el('button', { class: 'iconbtn', style: 'width:30px;height:30px;font-size:13px', html: '🗑', title: 'Delete workout', onclick: (ev) => {
@@ -620,6 +643,124 @@ function renderPlan() {
   }
 }
 
+// ============================================================
+//  ROUTINES — named workouts (Upper A, Functional…): exercises in order,
+//  each with a number of sets and a rep range. Start one in a tap.
+// ============================================================
+const DAYS = [['Mon', 1], ['Tue', 2], ['Wed', 3], ['Thu', 4], ['Fri', 5], ['Sat', 6], ['Sun', 0]];
+function hasDay(r) { return r.day !== '' && r.day !== null && r.day !== undefined && !isNaN(Number(r.day)); }
+function dayLabel(r) { const f = hasDay(r) ? DAYS.find(d => d[1] === Number(r.day)) : null; return f ? f[0] : ''; }
+function dayOrder(r) { const i = hasDay(r) ? DAYS.findIndex(d => d[1] === Number(r.day)) : -1; return i < 0 ? 99 : i; }
+function routineSummary(r) {
+  const items = (r.items || []).filter(i => exById(i.exerciseId));
+  const sets = items.reduce((t, i) => t + (Number(i.sets) || 0), 0);
+  return { n: items.length, sets: sets, names: items.map(i => exById(i.exerciseId).name) };
+}
+// today's workout already started from this routine, if any
+function startedToday(r) { return DB.Workouts.find(w => !w.deleted && w.routineId === r.id && dateKey(w.date) === todayISO()); }
+
+function startRoutine(r) {
+  const existing = startedToday(r);
+  if (existing) { openWorkout(existing.id); return; }
+  const items = (r.items || []).filter(i => exById(i.exerciseId));
+  const w = { id: uid(), date: todayISO(), type: 'together', participants: '', status: 'planned', notes: '',
+    plannedEx: items.map(i => i.exerciseId), circuits: [], routineId: r.id, deleted: false, updated: 0 };
+  const stamp = Date.now();   // one shared time: the planned order is kept until you start logging
+  ADDED[w.id] = {}; items.forEach(i => { ADDED[w.id][i.exerciseId] = stamp; });
+  upsert('Workouts', w); CFG.activeWorkoutId = w.id; save(); switchTab('log');
+}
+
+function renderRoutineBox() {
+  const box = $('#routineBox'); box.innerHTML = '';
+  const rs = DB.Routines.filter(r => !r.deleted).sort((a, b) => dayOrder(a) - dayOrder(b) || (a.name || '').localeCompare(b.name || ''));
+  if (!rs.length) {
+    box.appendChild(el('div', { class: 'card' }, [el('strong', { text: 'Routines' }),
+      el('div', { class: 'small muted', style: 'margin-top:4px', text: 'Plan a session once (exercises in order, with sets and a rep range for each), then start it in one tap. Tap “+ New routine” to build your first.' })]));
+    return;
+  }
+  const today = new Date().getDay();
+  rs.filter(r => hasDay(r) && Number(r.day) === today).forEach(r => {
+    const s = routineSummary(r), going = startedToday(r);
+    box.appendChild(el('div', { class: 'card', style: 'border-color:#075985;background:linear-gradient(180deg,#0c2a43,#1e293b)' }, [
+      el('div', { class: 'tiny muted', style: 'letter-spacing:.06em', text: 'TODAY · ' + (DAYS.find(d => d[1] === today) || ['', 0])[0].toUpperCase() }),
+      el('div', { class: 'row', style: 'margin:4px 0 2px' }, [el('strong', { style: 'font-size:19px', text: r.name })]),
+      el('div', { class: 'small muted', text: s.n + ' exercises · ' + s.sets + ' sets' }),
+      el('div', { class: 'tiny muted', style: 'margin:6px 0 10px', text: s.names.join(' · ') }),
+      el('button', { class: 'btn block', text: going ? '▶ Continue ' + r.name : '▶ Start ' + r.name, onclick: () => startRoutine(r) }),
+    ]));
+  });
+  box.appendChild(el('h2', { class: 'section', text: 'Your routines' }));
+  rs.forEach(r => {
+    const s = routineSummary(r), going = startedToday(r);
+    box.appendChild(el('div', { class: 'card' }, [el('div', { class: 'row' }, [
+      el('div', { class: 'grow' }, [
+        el('div', { html: '<b>' + esc(r.name) + '</b> ' + (dayLabel(r) ? '<span class="pill day">' + dayLabel(r) + '</span>' : '') }),
+        el('div', { class: 'tiny muted', text: s.n + ' exercises · ' + s.sets + ' sets' }),
+      ]),
+      el('button', { class: 'btn sm ghost', text: going ? 'Continue' : 'Start', onclick: () => startRoutine(r) }),
+      el('button', { class: 'iconbtn', html: '✏️', title: 'Edit routine', onclick: () => routineModal(r) }),
+    ])]));
+  });
+}
+
+// a small − n + stepper that edits obj[key] in place (no redraw needed)
+function miniStepper(obj, key, minFn, maxFn) {
+  const val = el('b', { text: String(obj[key]) });
+  const set = v => { obj[key] = Math.max(minFn(), Math.min(maxFn(), v)); val.textContent = String(obj[key]); };
+  return el('span', { class: 'step' }, [el('i', { text: '−', onclick: () => set(obj[key] - 1) }), val, el('i', { text: '+', onclick: () => set(obj[key] + 1) })]);
+}
+
+// build or edit a routine
+function routineModal(existing, state) {
+  const r = existing || { id: uid(), name: '', day: '', items: [], deleted: false, updated: 0 };
+  if (!state) {
+    state = { name: r.name || '', day: hasDay(r) ? Number(r.day) : null, stations: (r.items || []).map(i => i.exerciseId), cfg: {} };
+    (r.items || []).forEach(i => { state.cfg[i.exerciseId] = { sets: Number(i.sets) || 3, lo: Number(i.lo) || PROGRAM.lo, hi: Number(i.hi) || PROGRAM.hi }; });
+  }
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', { text: existing ? 'Edit routine' : 'New routine' }));
+  const nameIn = el('input', { type: 'text', placeholder: 'e.g. Upper A', value: state.name });
+  nameIn.addEventListener('input', () => { state.name = nameIn.value; });
+  m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Routine name' }), nameIn]));
+
+  const dayBox = el('div', { class: 'seg fill', style: 'flex-wrap:wrap' });
+  function drawDays() {
+    dayBox.innerHTML = '';
+    DAYS.forEach(d => dayBox.appendChild(el('button', { class: state.day === d[1] ? 'on' : '', text: d[0], onclick: () => { state.day = (state.day === d[1] ? null : d[1]); drawDays(); } })));
+  }
+  drawDays();
+  m.appendChild(el('label', { class: 'field' }, [el('span', { text: 'Usual day (it gets suggested on that day — tap again to clear)' }), dayBox]));
+
+  m.appendChild(el('h2', { class: 'section', text: 'Exercises, in order' }));
+  stationPicker(m, state, {
+    reopen: () => routineModal(existing, state),
+    rowExtra: id => {
+      const c = state.cfg[id] = state.cfg[id] || { sets: 3, lo: PROGRAM.lo, hi: PROGRAM.hi };
+      return el('div', { class: 'row', style: 'gap:10px;padding:0 0 10px 30px;flex-wrap:wrap' }, [
+        el('span', { class: 'tiny muted', text: 'Sets' }), miniStepper(c, 'sets', () => 1, () => 10),
+        el('span', { class: 'tiny muted', style: 'margin-left:6px', text: 'Reps' }),
+        miniStepper(c, 'lo', () => 1, () => c.hi), el('span', { class: 'muted', text: '–' }), miniStepper(c, 'hi', () => c.lo, () => 50),
+      ]);
+    },
+  });
+
+  const bar = el('div', { class: 'stickybar row', style: 'gap:10px' });
+  if (existing) bar.appendChild(el('button', { class: 'btn danger sm', text: 'Delete', onclick: () => {
+    if (!confirm('Delete the routine “' + r.name + '”? Past workouts keep their history.')) return;
+    r.deleted = true; upsert('Routines', r); closeModal(); renderPlan(); toast('Routine deleted');
+  } }));
+  bar.appendChild(el('button', { class: 'btn ghost', style: 'flex:1', text: 'Cancel', onclick: closeModal }));
+  bar.appendChild(el('button', { class: 'btn', style: 'flex:2', text: 'Save routine', onclick: () => {
+    if (!state.name.trim()) { toast('Give the routine a name'); return; }
+    if (!state.stations.length) { toast('Add at least one exercise'); return; }
+    r.name = state.name.trim(); r.day = state.day === null ? '' : state.day;
+    r.items = state.stations.map(id => Object.assign({ exerciseId: id }, state.cfg[id] || { sets: 3, lo: PROGRAM.lo, hi: PROGRAM.hi }));
+    upsert('Routines', r); closeModal(); renderPlan(); toast('Routine saved');
+  } }));
+  m.appendChild(bar);
+  openModal();
+}
+
 // ---- LOG ----
 function openWorkout(id) { CFG.activeWorkoutId = id; save(); switchTab('log'); }
 
@@ -640,7 +781,7 @@ function renderLog() {
     el('div', { class: 'row' }, [
       el('div', {}, [
         el('div', { html: '<strong>' + fmtDate(w.date) + '</strong>' }),
-        el('div', { class: 'small muted', text: w.type === 'together' ? 'Neil + Simon' : (w.participants || 'Solo') }),
+        el('div', { class: 'small muted', html: esc(w.type === 'together' ? 'Neil + Simon' : (w.participants || 'Solo')) + (routineOf(w) ? ' · <b style="color:#7dd3fc">' + esc(routineOf(w).name) + '</b>' : '') }),
       ]),
       el('span', { class: 'spacer' }),
       el('button', { class: 'btn sm ghost', text: w.status === 'done' ? 'Reopen' : 'Finish', onclick: () => { w.status = w.status === 'done' ? 'planned' : 'done'; upsert('Workouts', w); renderLog(); toast(w.status === 'done' ? 'Workout finished 🎉' : 'Reopened'); } }),
@@ -682,11 +823,52 @@ function renderLog() {
   if (!items.length) {
     body.appendChild(el('div', { class: 'empty', text: 'No exercises yet — add one below.' }));
     body.appendChild(actions);
-  } else {
+  } else if (!routineOf(w)) {
     body.appendChild(drawItem(items[0]));                  // current exercise / circuit, on top
     body.appendChild(actions);                             // + add / edit, right beneath
     items.slice(1).forEach(it => body.appendChild(drawItem(it))); // completed, below
+  } else {
+    // a routine workout: the one you're on, then what's still to do (compact), then what's done
+    const started = it => it.kind === 'circuit' ? circuitSets(w, it.c).length > 0 : (lastTs[it.id] || 0) > 0;
+    const rest = items.slice(1);
+    const todo = rest.filter(it => it.kind === 'ex' && !started(it)).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+    body.appendChild(drawItem(items[0]));
+    body.appendChild(actions);
+    if (todo.length) {
+      body.appendChild(el('h2', { class: 'section', text: 'Up next in ' + routineOf(w).name }));
+      const box = el('div', { class: 'card', style: 'padding:4px 12px' });
+      todo.forEach((it, i) => { const r = upNextRow(w, it.id, i); if (r) box.appendChild(r); });
+      body.appendChild(box);
+    }
+    rest.filter(it => todo.indexOf(it) === -1).forEach(it => body.appendChild(drawItem(it)));
   }
+}
+
+// a compact "still to do" row for a routine exercise; tap it to make it the current one
+function upNextRow(w, exId, idx) {
+  const exr = exById(exId); if (!exr) return null;
+  const item = routineItem(w, exId), range = rangeFor(w, exId);
+  const people = w.type === 'together' ? PEOPLE : peopleFor(w);
+  const hs = people.map(p => ({ p: p, h: progressionHint(exr, p, w.id, range) })).filter(x => x.h && x.h.weight !== undefined);
+  let hint = '';
+  if (hs.length) {
+    const same = hs.every(x => x.h.weight === hs[0].h.weight);
+    const tilde = hs[0].h.state === 'start' ? '~' : '';
+    hint = same ? (hs.length > 1 ? 'both ' : hs[0].p + ' ') + tilde + loadText(exr, hs[0].h.weight)
+               : hs.map(x => x.p + ' ' + (x.h.state === 'start' ? '~' : '') + fmtNum(x.h.weight)).join(' · ');
+    if (hs.some(x => x.h.state === 'ready')) hint = '✅ ' + hint;
+    if (exr.inverted) hint += ' assist';
+  }
+  return el('div', { class: 'next' + (idx === 0 ? ' first' : ''), onclick: () => {
+    ADDED[w.id] = ADDED[w.id] || {}; ADDED[w.id][exId] = Date.now(); save(); renderLog(); window.scrollTo(0, 0);
+  } }, [
+    el('span', { class: 'num', text: String((w.plannedEx || []).indexOf(exId) + 1) }),   // its place in the routine
+    el('div', { class: 'grow' }, [
+      el('div', { html: esc(exr.name) + (item ? ' <span class="pill target">' + item.sets + ' × ' + item.lo + '–' + item.hi + '</span>' : '') }),
+      hint ? el('div', { class: 'tiny muted', text: hint }) : el('span'),
+    ]),
+    el('span', { class: 'muted', text: '›' }),
+  ]);
 }
 
 // one set, formatted for its exercise type
@@ -710,8 +892,11 @@ function exerciseLogCard(w, exId) {
   // in a together-workout, say so when only one of you has done this exercise
   const doers = Array.from(new Set(sets.map(s => s.person)));
   const onlyTag = (w.type === 'together' && doers.length === 1) ? el('span', { class: 'pill', text: doers[0] + ' only' }) : el('span');
+  const item = routineItem(w, exId);          // this exercise's target in the workout's routine, if any
+  const range = rangeFor(w, exId);
   card.appendChild(el('div', { class: 'row' }, [
     el('strong', { text: exercise.name }),
+    item ? el('span', { class: 'pill target', text: item.sets + ' × ' + item.lo + '–' + item.hi }) : el('span'),
     onlyTag,
     el('span', { class: 'spacer' }),
     exercise.inverted ? el('span', { class: 'pill tiny', text: 'assist ↓ better' }) : el('span'),
@@ -725,7 +910,7 @@ function exerciseLogCard(w, exId) {
 
   // what to aim for today, per person (only for the person/people actually doing it)
   const hintPeople = w.type === 'together' ? (doers.length === 1 ? doers : PEOPLE) : peopleFor(w);
-  const coach = coachBox(w, exercise, hintPeople);
+  const coach = coachBox(w, exercise, hintPeople, range);
   if (coach) card.appendChild(coach);
 
   // group sets by "set number" (pair Neil+Simon entries that share a ts)
@@ -751,6 +936,14 @@ function exerciseLogCard(w, exId) {
     line.appendChild(el('button', { class: 'iconbtn', style: 'width:32px;height:32px;font-size:14px', html: '✕', title: grp.length > 1 ? 'Delete this set for both people' : 'Delete set', onclick: () => { grp.forEach(s => { s.deleted = true; upsert('Sets', s); }); renderLog(); } }));
     card.appendChild(line);
   });
+
+  // routine target: how many working sets are done out of how many planned
+  if (item) {
+    const done = groups.filter(ts => !byTs[ts].some(s => s.warmup)).length, goal = Number(item.sets) || 3;
+    card.appendChild(el('div', { class: 'row', style: 'margin:8px 0 2px;gap:8px', html:
+      '<span class="small muted">' + (done >= goal ? 'All ' + goal + ' sets done' : 'Set ' + (done + 1) + ' of ' + goal + ' next') + '</span>' +
+      '<span class="sdots">' + Array.from({ length: Math.max(goal, done) }, (_, i) => '<i class="' + (i < done ? 'on' : '') + '"></i>').join('') + '</span>' }));
+  }
 
   // add-set controls: duplicate the previous set, or enter a fresh one
   const lastGrp = groups.length ? byTs[groups[groups.length - 1]] : null;
@@ -969,13 +1162,16 @@ function stationPicker(m, state, opts) {
     if (!state.stations.length) { listBox.appendChild(el('div', { class: 'small muted', style: 'padding:6px 0', text: 'No stations yet — tick exercises below.' })); return; }
     state.stations.forEach((id, i) => {
       const e = exById(id);
-      listBox.appendChild(el('div', { class: 'exrow' }, [
+      const row = el('div', { class: 'exrow' }, [
         el('span', { class: 'muted', style: 'width:20px', text: String(i + 1) }),
         el('div', { class: 'grow', text: e ? e.name : '?' }),
         el('button', { class: 'iconbtn', style: small, text: '▲', title: 'Move up', onclick: () => move(i, -1) }),
         el('button', { class: 'iconbtn', style: small, text: '▼', title: 'Move down', onclick: () => move(i, 1) }),
         el('button', { class: 'iconbtn', style: small, html: '✕', title: 'Remove', onclick: () => { state.stations = state.stations.filter(x => x !== id); if (cbs[id]) cbs[id].checked = false; drawList(); } }),
-      ]));
+      ]);
+      listBox.appendChild(row);
+      const extra = opts.rowExtra ? opts.rowExtra(id) : null;   // e.g. sets and rep range for a routine
+      if (extra) listBox.appendChild(extra);
     });
   }
   drawList();
@@ -1125,7 +1321,12 @@ function buildSetRow(exr, v, base) {
 //  Only suggestions: nothing is forced, and past schemes are left untouched.
 // ============================================================
 function epley(w, r) { return Number(w) * (1 + Number(r) / 30); }
-function hintable(exr) { return !!exr && ['plate', 'machine', 'dumbbell', 'kettlebell'].indexOf(exr.weightType) !== -1; }
+function hintable(exr) { return !!exr && ['plate', 'machine', 'dumbbell', 'kettlebell', 'bodyweight'].indexOf(exr.weightType) !== -1; }
+// "62.5 kg", or for bodyweight moves "bodyweight" / "BW + 5 kg" (the weight is the load added)
+function loadText(exr, w) {
+  if (exr.weightType === 'bodyweight') return Number(w) > 0 ? 'BW + ' + fmtNum(w) + ' kg' : 'bodyweight';
+  return fmtNum(w) + ' kg';
+}
 
 // one person's working sets for an exercise, grouped into sessions (oldest first)
 function personSessions(exId, person, excludeWid, filter) {
@@ -1160,9 +1361,12 @@ function nextWeight(exr, w) {
   return round2(w + (Number(exr.step) || 2.5));
 }
 // -> { state: 'ready' | 'hold' | 'low' | 'start', weight, last?, minReps?, from? } or null
-function progressionHint(exr, person, excludeWid) {
+// range = { lo, hi } for this exercise (a routine can set its own); defaults to the 8–10 programme
+function progressionHint(exr, person, excludeWid, range) {
   if (!hintable(exr)) return null;
-  const cur = personSessions(exr.id, person, excludeWid, s => Number(s.scheme) === PROGRAM.scheme);
+  range = range || PROGRAM;
+  // bodyweight moves have no rep scheme, so all their sets count
+  const cur = personSessions(exr.id, person, excludeWid, s => exr.weightType === 'bodyweight' || Number(s.scheme) === PROGRAM.scheme);
   if (cur.length) {
     const last = cur[cur.length - 1];
     const ws = last.sets.map(s => Number(s.weight));
@@ -1170,19 +1374,21 @@ function progressionHint(exr, person, excludeWid) {
     const reps = last.sets.filter(s => Number(s.weight) === ref).map(s => Number(s.reps));
     const minReps = Math.min.apply(null, reps);
     const info = { last: { weight: ref, reps: reps, date: last.date }, minReps: minReps };
-    if (reps.length >= 2 && minReps >= PROGRAM.hi) return Object.assign(info, { state: 'ready', weight: nextWeight(exr, ref) });
-    if (minReps < PROGRAM.lo) return Object.assign(info, { state: 'low', weight: ref });
+    if (reps.length >= 2 && minReps >= range.hi) return Object.assign(info, { state: 'ready', weight: nextWeight(exr, ref) });
+    if (minReps < range.lo) return Object.assign(info, { state: 'low', weight: ref });
     return Object.assign(info, { state: 'hold', weight: ref });
   }
   // nothing at the new range yet: estimate a starting weight from the last two sessions at any range
-  if (exr.inverted) return null;
+  // (not for assisted moves, or bodyweight moves where the weight is only an added load)
+  if (exr.inverted || exr.weightType === 'bodyweight') return null;
+  const target = Math.round((range.lo + range.hi) / 2);   // reps the estimate is aimed at
   const startFor = (p, label) => {
     let best = null;
     personSessions(exr.id, p, excludeWid).slice(-2).forEach(se => se.sets.forEach(s => {
       const e = epley(s.weight, s.reps); if (!best || e >= best.e) best = { e: e, s: s, date: se.date };   // ties go to the more recent session
     }));
     if (!best || !(best.e > 0)) return null;
-    return { state: 'start', weight: roundToStep(exr, best.e / (1 + 9 / 30)),
+    return { state: 'start', weight: roundToStep(exr, best.e / (1 + target / 30)), reps: target,
       from: label + ' ' + fmtNum(best.s.weight) + ' × ' + best.s.reps + ' on ' + fmtDate(best.date) };
   };
   const mine = startFor(person, 'your');
@@ -1190,19 +1396,21 @@ function progressionHint(exr, person, excludeWid) {
   const other = PEOPLE.find(p => p !== person);
   return other ? startFor(other, other + '’s') : null;
 }
-function hintHtml(exr, h) {
-  const last = h.last ? '<span class="muted">last</span> <b>' + fmtNum(h.last.weight) + ' × ' + h.last.reps.join(' / ') + '</b>' : '';
+function hintHtml(exr, h, range) {
+  range = range || PROGRAM;
+  const last = h.last ? '<span class="muted">last</span> <b>' + (exr.weightType === 'bodyweight' ? loadText(exr, h.last.weight) : fmtNum(h.last.weight)) + ' × ' + h.last.reps.join(' / ') + '</b>' : '';
   if (h.state === 'start') return '<span class="start">Start around <b>' + fmtNum(h.weight) + ' kg</b></span><div class="tiny muted">From ' + esc(h.from) + '. Adjust if it feels off.</div>';
   if (h.state === 'ready') {
     let go;
     if (exr.inverted) go = 'Less help: ' + fmtNum(h.last.weight) + ' → ' + fmtNum(h.weight) + ' kg assist';
+    else if (exr.weightType === 'bodyweight') go = 'Add load: ' + loadText(exr, h.weight);
     else if (exr.weightType === 'machine') go = 'Go up: +' + fmtNum(MACHINE_ADDONS[0]) + ' kg → ' + fmtNum(h.weight) + ' kg';
     else if (exr.weightType === 'dumbbell' || exr.weightType === 'kettlebell') go = 'Next size: ' + fmtNum(h.weight) + ' kg';
     else go = 'Go up to ' + fmtNum(h.weight) + ' kg';
     return last + '<br><span class="ready">✅ ' + go + '</span>';
   }
-  if (h.state === 'low') return last + '<br><span class="low">⚠ Under ' + PROGRAM.lo + ' on some sets — stay, or ease off a step</span>';
-  return last + '<br><span class="hold">Stay at ' + fmtNum(h.weight) + ' kg — aim for ' + PROGRAM.hi + ' on every set</span>';
+  if (h.state === 'low') return last + '<br><span class="low">⚠ Under ' + range.lo + ' on some sets — stay, or ease off a step</span>';
+  return last + '<br><span class="hold">Stay at ' + loadText(exr, h.weight) + ' — aim for ' + range.hi + ' on every set</span>';
 }
 // "● Neil", or "●● Neil + Simon" when it applies to everyone
 function whoHtml(people) {
@@ -1211,16 +1419,38 @@ function whoHtml(people) {
   return people.map((p, i) => '<span class="pdot dot-' + p.toLowerCase() + '"' + (i ? ' style="margin-left:-4px"' : '') + '>●</span>').join('') + '<b>' + people.join(' + ') + '</b>';
 }
 // the hint box on an exercise card; people with identical advice share one line
-function coachBox(w, exr, people) {
+function coachBox(w, exr, people, range) {
   if (!hintable(exr)) return null;
-  const hs = people.map(p => ({ p: p, h: progressionHint(exr, p, w.id) })).filter(x => x.h);
+  const hs = people.map(p => ({ p: p, h: progressionHint(exr, p, w.id, range) })).filter(x => x.h);
   if (!hs.length) return null;
   const keyOf = h => JSON.stringify([h.state, h.weight, h.last && h.last.weight, h.last && h.last.reps, h.from]);
   const groups = [];
   hs.forEach(x => { const g = groups.find(g => keyOf(g.h) === keyOf(x.h)); if (g) g.people.push(x.p); else groups.push({ h: x.h, people: [x.p] }); });
   const box = el('div', { class: 'coach' });
-  groups.forEach(g => box.appendChild(el('div', { class: 'ln', html: whoHtml(g.people) + ' ' + hintHtml(exr, g.h) })));
+  groups.forEach(g => box.appendChild(el('div', { class: 'ln', html: whoHtml(g.people) + ' ' + hintHtml(exr, g.h, range) })));
   return box;
+}
+
+// ---- routines: a workout's routine, an exercise's target within it, and what this person already did today ----
+function routineOf(w) { return (w && w.routineId) ? DB.Routines.find(r => r.id === w.routineId) : null; }
+function routineItem(w, exId) { const r = routineOf(w); return r ? (r.items || []).find(i => i.exerciseId === exId) : null; }
+function rangeFor(w, exId) {
+  const it = routineItem(w, exId);
+  return it ? { lo: Number(it.lo) || PROGRAM.lo, hi: Number(it.hi) || PROGRAM.hi } : PROGRAM;
+}
+// the rep range a routine gives this exercise (any routine), for places that aren't inside a workout
+function anyRoutineRange(exId) {
+  for (const r of DB.Routines) {
+    if (r.deleted) continue;
+    const it = (r.items || []).find(i => i.exerciseId === exId);
+    if (it) return { lo: Number(it.lo) || PROGRAM.lo, hi: Number(it.hi) || PROGRAM.hi };
+  }
+  return null;
+}
+function todayLast(w, exId, person) {
+  const mine = setsForWorkout(w.id).filter(s => s.exerciseId === exId && !s.circuitId && s.person === person)
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  return mine[mine.length - 1];
 }
 
 // who did the most recent set of this exercise in this workout: a person's name if only
@@ -1248,6 +1478,7 @@ function addSetModal(w, exercise, ctx) {
   const timed = isTimed(exercise.weightType);
   const cardio = isCardio(exercise.weightType);
   const schemeless = isSprint || bw || cardio || !!ctx;   // circuits have no Heavy/Light
+  const range = rangeFor(w, exercise.id);   // this exercise's target range (a routine can set its own)
   let scheme = PROGRAM.scheme;       // new sets default to the 8–10 programme
   let showOld = false;               // reveal the Heavy 5 / Light 15 options
   let split = ctx ? !!ctx.split : false;
@@ -1265,6 +1496,10 @@ function addSetModal(w, exercise, ctx) {
                 : { duration: 15, rest: 30, number: 4 };
     }
     if (bw) {
+      const td = todayLast(w, exr.id, p);
+      if (td) return { weight: Number(td.weight), reps: Number(td.reps), loadType: 'plate' };
+      const h = timed ? null : progressionHint(exr, p, w.id, range);   // push-ups etc. progress by adding load
+      if (h && h.weight !== undefined) return { weight: h.weight, reps: h.state === 'hold' ? Math.min(range.hi, (h.minReps || range.lo) + 1) : range.lo, loadType: 'plate' };
       const ls = lastSet(exr.id, p) || lastSet(exr.id, other);
       return { weight: ls ? Number(ls.weight) : 0, reps: ls ? Number(ls.reps) : (timed ? 30 : 10), loadType: 'plate' };
     }
@@ -1276,14 +1511,12 @@ function addSetModal(w, exercise, ctx) {
     }
     if (scheme === PROGRAM.scheme) {
       // 1. carry on from what this person already did today on this exercise
-      const mine = setsForWorkout(w.id).filter(s => s.exerciseId === exr.id && !s.circuitId && s.person === p)
-        .sort((a, b) => (a.ts || 0) - (b.ts || 0));
-      const today = mine[mine.length - 1];
+      const today = todayLast(w, exr.id, p);
       if (today) return { weight: Number(today.weight), reps: Number(today.reps) };
       // 2. otherwise the progression hint: today's target weight, and a sensible first rep count
-      const h = progressionHint(exr, p, w.id);
+      const h = progressionHint(exr, p, w.id, range);
       if (h && h.weight) return { weight: h.weight,
-        reps: h.state === 'start' ? 9 : h.state === 'hold' ? Math.min(PROGRAM.hi, (h.minReps || PROGRAM.lo) + 1) : PROGRAM.lo };
+        reps: h.state === 'start' ? (h.reps || 9) : h.state === 'hold' ? Math.min(range.hi, (h.minReps || range.lo) + 1) : range.lo };
     }
     // prefer the last time at THIS scheme (heavy/light differ a lot), then any history
     const ls = lastSet(exr.id, p, scheme) || lastSet(exr.id, other, scheme)
@@ -1709,7 +1942,7 @@ function renderHistory() {
   if (isCardio(exr.weightType)) { box.appendChild(cardioHistoryCard(exr)); return; }
   if (isBodyweight(exr.weightType)) { box.appendChild(bodyweightHistoryCard(exr)); return; }
   // the current programme first; the Heavy 5 / Light 15 history is kept, tucked underneath
-  box.appendChild(historyCard(exr, PROGRAM.scheme, 'Current programme (' + SCHEMES[PROGRAM.scheme] + ')'));
+  box.appendChild(historyCard(exr, PROGRAM.scheme, 'Current programme'));
   const hasCur = PEOPLE.some(p => setsFor(exr.id, p, PROGRAM.scheme).length);
   const hasOld = [5, 15].some(sc => PEOPLE.some(p => setsFor(exr.id, p, sc).length));
   if (hasOld) {
@@ -1742,7 +1975,7 @@ function historyCard(exr, scheme, label) {
     let empty = 'No ' + (scheme === 5 ? 'heavy' : 'light') + ' sets yet', emptyHtml = null;
     if (scheme === PROGRAM.scheme) {
       // nothing at the new range yet: show where to start
-      const h = progressionHint(exr, p, null);
+      const h = progressionHint(exr, p, null, anyRoutineRange(exr.id));
       empty = 'No sessions yet';
       if (h && h.state === 'start') emptyHtml = 'No sessions yet — <span class="start" style="color:#7dd3fc;font-weight:700">start ~' + fmtNum(h.weight) + ' kg</span> <span class="tiny">(from ' + esc(h.from) + ')</span>';
     }
@@ -1959,6 +2192,7 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
 // ---- events ----
 $all('nav.tabs button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 $('#btnNewWorkout').addEventListener('click', () => newWorkoutModal());
+$('#btnNewRoutine').addEventListener('click', () => routineModal());
 $('#btnNewExercise').addEventListener('click', () => exerciseModal());
 $('#btnSettings').addEventListener('click', settingsModal);
 $('#dashExercise').addEventListener('change', e => { UI.dashExerciseId = e.target.value; UI.showEarlier = null; renderProgress(); });
