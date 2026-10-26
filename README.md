@@ -70,6 +70,12 @@ three steps on his phone with the same URL.
   remembered separately). **Sprints** are a special type: instead of weight × reps
   you log **duration / rest / number** (presets + manual). Each exercise card also
   has a 🗑 to remove it from the session, and *Duplicate last* to repeat a set.
+- **Who did it?** — in a together-workout, *Add set* asks who did it: **Neil + Simon**,
+  **Neil only** or **Simon only**, so nobody has to log a fake placeholder when the
+  other sat an exercise out. It's remembered for that exercise for the rest of the
+  workout (and *Duplicate last* follows it); circuit stations can be skipped per
+  person too. Tap one person's part of a logged set to **change or remove just
+  their entry** (the ✕ still removes the whole set for both).
 - **Cardio machines** — an exercise type that logs **duration (mm:ss) + setting**
   instead of weight × reps. Pick *Cardio machine + gradient* for something like a
   treadmill and it also records a **gradient %**. Progress scores a session as

@@ -697,8 +697,12 @@ function exerciseLogCard(w, exId) {
   const sets = setsForWorkout(w.id).filter(s => s.exerciseId === exId && !s.circuitId)
     .sort((a, b) => (a.ts || 0) - (b.ts || 0));
   const card = el('div', { class: 'card' });
+  // in a together-workout, say so when only one of you has done this exercise
+  const doers = Array.from(new Set(sets.map(s => s.person)));
+  const onlyTag = (w.type === 'together' && doers.length === 1) ? el('span', { class: 'pill', text: doers[0] + ' only' }) : el('span');
   card.appendChild(el('div', { class: 'row' }, [
     el('strong', { text: exercise.name }),
+    onlyTag,
     el('span', { class: 'spacer' }),
     exercise.inverted ? el('span', { class: 'pill tiny', text: 'assist ↓ better' }) : el('span'),
     el('button', { class: 'iconbtn', style: 'width:32px;height:32px;font-size:15px', html: '🗑', title: 'Remove exercise from this workout', onclick: () => {
@@ -724,11 +728,12 @@ function exerciseLogCard(w, exId) {
       const s = grp.find(x => x.person === p);
       const pl = p.toLowerCase();
       if (s) {
-        line.appendChild(el('span', { class: 'grow', html:
+        // tap one person's part of the set to change or remove just theirs
+        line.appendChild(el('span', { class: 'grow', style: 'cursor:pointer', title: 'Tap to change or remove ' + p + '’s entry', onclick: () => personSetModal(w, exercise, s, idx + 1), html:
           '<span class="pdot dot-' + pl + '">●</span><b class="dot-' + pl + '">' + p + '</b> ' + setDetailHtml(exercise, s) }));
       }
     });
-    line.appendChild(el('button', { class: 'iconbtn', style: 'width:32px;height:32px;font-size:14px', html: '✕', title: 'Delete set', onclick: () => { grp.forEach(s => { s.deleted = true; upsert('Sets', s); }); renderLog(); } }));
+    line.appendChild(el('button', { class: 'iconbtn', style: 'width:32px;height:32px;font-size:14px', html: '✕', title: grp.length > 1 ? 'Delete this set for both people' : 'Delete set', onclick: () => { grp.forEach(s => { s.deleted = true; upsert('Sets', s); }); renderLog(); } }));
     card.appendChild(line);
   });
 
@@ -739,6 +744,23 @@ function exerciseLogCard(w, exId) {
   btnRow.appendChild(el('button', { class: 'btn sm ' + (lastGrp ? 'ghost' : ''), style: 'flex:1', text: '+ Add set (new)', onclick: () => addSetModal(w, exercise) }));
   card.appendChild(btnRow);
   return card;
+}
+
+// change or remove ONE person's entry in a logged set (the other person's stays)
+function personSetModal(w, exercise, s, no) {
+  const p = s.person;
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', { text: p + '’s entry · ' + exercise.name }));
+  m.appendChild(el('div', { class: 'small muted', style: 'margin-bottom:4px', text: 'Set #' + no }));
+  m.appendChild(el('div', { style: 'margin-bottom:14px', html: setDetailHtml(exercise, s) }));
+  m.appendChild(el('button', { class: 'btn block ghost', text: 'Change ' + p + '’s entry', onclick: () => {
+    addSetModal(w, exercise, { title: 'Change ' + p + '’s entry', fixed: p, vals: { [p]: valsFromSet(exercise, s) },
+      onSave: out => { buildSetRow(exercise, out[p], s); upsert('Sets', s); renderLog(); toast('Updated'); } });
+  } }));
+  m.appendChild(el('button', { class: 'btn block ghost', style: 'margin-top:8px;color:var(--bad);border-color:#7f1d1d', text: 'Remove ' + p + '’s entry',
+    onclick: () => { s.deleted = true; upsert('Sets', s); closeModal(); renderLog(); toast('Removed ' + p + '’s entry'); } }));
+  m.appendChild(el('button', { class: 'btn block', style: 'margin-top:8px', text: 'Cancel', onclick: closeModal }));
+  openModal();
 }
 
 function duplicateSet(w, exercise, grp) {
@@ -795,7 +817,10 @@ function pendingFor(w, c) {
     p[exId] = {};
     people.forEach(person => {
       const s = last && last.sets.find(x => x.exerciseId === exId && x.person === person);
-      p[exId][person] = s ? valsFromSet(exr, s) : stationStartVals(exr, person);
+      if (s) p[exId][person] = valsFromSet(exr, s);
+      // someone who skipped this station last round stays skipped until they choose to rejoin
+      else if (last && last.sets.some(x => x.exerciseId === exId)) { /* skipped */ }
+      else p[exId][person] = stationStartVals(exr, person);
     });
   });
   PENDING[c.id] = p;
@@ -869,10 +894,14 @@ function circuitCard(w, c) {
 function editStation(w, c, exr, roundNo) {
   const people = peopleFor(w);
   const cur = pendingFor(w, c)[exr.id];
-  const vals = {}; people.forEach(p => { vals[p] = Object.assign({}, cur[p]); });
-  const split = people.length > 1 && JSON.stringify(vals[people[0]]) !== JSON.stringify(vals[people[1]]);
-  addSetModal(w, exr, { title: 'Round ' + roundNo + ' · ' + exr.name, vals: vals, split: split,
-    onSave: out => { Object.keys(out).forEach(p => { cur[p] = out[p]; }); renderLog(); } });
+  const present = people.filter(p => cur[p]);
+  // the editor needs values for everyone, in case a skipped person rejoins
+  const vals = {};
+  people.forEach(p => { vals[p] = Object.assign({}, cur[p] || cur[present[0]] || stationStartVals(exr, p)); });
+  const who = (people.length > 1 && present.length === 1) ? present[0] : 'both';
+  const split = present.length > 1 && JSON.stringify(vals[people[0]]) !== JSON.stringify(vals[people[1]]);
+  addSetModal(w, exr, { title: 'Round ' + roundNo + ' · ' + exr.name, vals: vals, split: split, who: who,
+    onSave: out => { people.forEach(p => { if (out[p]) cur[p] = out[p]; else delete cur[p]; }); renderLog(); } });
 }
 
 function logCircuitRound(w, c) {
@@ -1075,11 +1104,26 @@ function buildSetRow(exr, v, base) {
   return Object.assign(base, { scheme: base.scheme === undefined ? '' : base.scheme, weight: round2(v.weight), reps: Math.round(v.reps) });
 }
 
-// ctx (optional) turns this into the circuit "change a station" editor:
-//   { title, vals: {person: values}, split, onSave(valuesByPerson) }
+// who did the most recent set of this exercise in this workout: a person's name if only
+// they did it, otherwise 'both' — so a one-person exercise stays one-person for the next set
+function lastWhoFor(w, exId) {
+  const sets = setsForWorkout(w.id).filter(s => s.exerciseId === exId && !s.circuitId);
+  if (!sets.length) return 'both';
+  const lastTs = Math.max.apply(null, sets.map(s => s.ts || 0));
+  const people = Array.from(new Set(sets.filter(s => (s.ts || 0) === lastTs).map(s => s.person)));
+  return people.length === 1 ? people[0] : 'both';
+}
+
+// ctx (optional) turns this into the circuit "change a station" editor, or the editor for one
+// person's logged set:  { title, vals: {person: values}, split, who, fixed, onSave(valuesByPerson) }
 function addSetModal(w, exercise, ctx) {
-  const solo = w.type !== 'together';
-  const soloPerson = solo ? (w.participants || 'Neil') : null;
+  const together = w.type === 'together';
+  const onlyPerson = w.participants || 'Neil';          // the one person in a solo workout
+  // who did this set: 'both' or a person's name (a skip is simply "the other person only")
+  let who = (ctx && ctx.fixed) ? ctx.fixed
+          : !together ? onlyPerson
+          : ctx ? (ctx.who || 'both')
+          : lastWhoFor(w, exercise.id);
   const isSprint = exercise.weightType === 'sprint';
   const bw = isBodyweight(exercise.weightType);
   const timed = isTimed(exercise.weightType);
@@ -1122,12 +1166,19 @@ function addSetModal(w, exercise, ctx) {
     m.innerHTML = '';
     m.appendChild(el('h3', { text: ctx ? ctx.title : ((isSprint ? 'Add sprints · ' : 'Add set · ') + exercise.name) }));
 
+    // who did this? (together-workouts only) — pick one person if the other sat it out
+    if (together && !(ctx && ctx.fixed)) {
+      m.appendChild(el('div', { class: 'small muted', style: 'margin-bottom:4px', text: 'Who did this?' }));
+      m.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:14px' }, [['both', 'Neil + Simon'], ['Neil', 'Neil only'], ['Simon', 'Simon only']].map(o =>
+        el('button', { class: who === o[0] ? 'on' : '', text: o[1], onclick: () => { who = o[0]; draw(); } }))));
+    }
+
     // scheme (heavy/light) — not relevant for sprints or bodyweight
     if (!schemeless) m.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:14px' }, [5, 15].map(s =>
       el('button', { class: scheme === s ? 'on' : '', text: SCHEMES[s], onclick: () => { scheme = s; vals.Neil = pickStart(exercise, 'Neil'); vals.Simon = pickStart(exercise, 'Simon'); draw(); } })
     )));
 
-    if (!solo) {
+    if (together && who === 'both') {
       // both / split toggle
       m.appendChild(el('div', { class: 'seg fill', style: 'margin-bottom:14px' }, [
         el('button', { class: split ? '' : 'on', text: 'Same for both', onclick: () => { split = false; draw(); } }),
@@ -1135,8 +1186,8 @@ function addSetModal(w, exercise, ctx) {
       ]));
     }
 
-    if (solo) {
-      m.appendChild(personEntry(exercise, soloPerson, vals[soloPerson], false));
+    if (who !== 'both') {
+      m.appendChild(personEntry(exercise, who, vals[who], false));
     } else if (!split) {
       // one entry that applies to both (use Neil's vals as the shared value)
       m.appendChild(personEntry(exercise, null, vals.Neil, false));
@@ -1231,7 +1282,7 @@ function addSetModal(w, exercise, ctx) {
     if (ctx) {
       // circuit station: hand the chosen values back instead of creating sets
       const out = {};
-      if (solo) out[soloPerson] = vals[soloPerson];
+      if (who !== 'both') out[who] = vals[who];
       else if (!split) PEOPLE.forEach(p => { out[p] = Object.assign({}, vals.Neil); });
       else PEOPLE.forEach(p => { out[p] = vals[p]; });
       closeModal(); ctx.onSave(out);
@@ -1242,7 +1293,7 @@ function addSetModal(w, exercise, ctx) {
       return buildSetRow(exercise, v, { id: uid(), workoutId: w.id, exerciseId: exercise.id, person, ts, warmup: warmup, scheme: scheme, deleted: false, updated: 0 });
     }
     let toAdd = [];
-    if (solo) toAdd = [makeSet(soloPerson, vals[soloPerson])];
+    if (who !== 'both') toAdd = [makeSet(who, vals[who])];
     else if (!split) toAdd = PEOPLE.map(p => makeSet(p, vals.Neil));
     else toAdd = PEOPLE.map(p => makeSet(p, vals[p]));
     toAdd.forEach(s => upsert('Sets', s));
