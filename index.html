@@ -1418,7 +1418,7 @@ function progressionHint(exr, person, excludeWid, range) {
   // nothing at the new range yet: estimate a starting weight from the last two sessions at any range
   // (not for assisted moves, or bodyweight moves where the weight is only an added load)
   if (exr.inverted || exr.weightType === 'bodyweight') return null;
-  const target = Math.round((range.lo + range.hi) / 2);   // reps the estimate is aimed at
+  const target = range.lo;   // reps the estimate is aimed at: the bottom of the range, so day one is a solid 8
   const startFor = (p, label) => {
     let best = null;
     personSessions(exr.id, p, excludeWid).slice(-2).forEach(se => se.sets.forEach(s => {
@@ -1470,7 +1470,20 @@ function coachBox(w, exr, people, range) {
 
 // ---- routines: a workout's routine, an exercise's target within it, and what this person already did today ----
 function routineOf(w) { return (w && w.routineId) ? DB.Routines.find(r => r.id === w.routineId) : null; }
-function routineItem(w, exId) { const r = routineOf(w); return r ? (r.items || []).find(i => i.exerciseId === exId) : null; }
+// An exercise swapped into a routine workout takes over the target of the routine exercise it
+// replaced (extras and dropped items pair up in order); with nothing to replace it gets 3 × the default range.
+function routineItem(w, exId) {
+  const r = routineOf(w); if (!r) return null;
+  const items = r.items || [];
+  const own = items.find(i => i.exerciseId === exId);
+  if (own) return own;
+  const present = (w.plannedEx || []).slice();
+  setsForWorkout(w.id).forEach(s => { if (!s.circuitId && !present.includes(s.exerciseId)) present.push(s.exerciseId); });
+  const k = present.filter(id => !items.some(i => i.exerciseId === id)).indexOf(exId);
+  if (k === -1) return null;
+  const dropped = items.filter(i => !present.includes(i.exerciseId));
+  return dropped[k] ? Object.assign({}, dropped[k], { exerciseId: exId }) : { exerciseId: exId, sets: 3, lo: PROGRAM.lo, hi: PROGRAM.hi };
+}
 function rangeFor(w, exId) {
   const it = routineItem(w, exId);
   return it ? { lo: Number(it.lo) || PROGRAM.lo, hi: Number(it.hi) || PROGRAM.hi } : PROGRAM;
@@ -1536,7 +1549,7 @@ function addSetModal(w, exercise, ctx) {
       const td = todayLast(w, exr.id, p);
       if (td) return { weight: Number(td.weight), reps: Number(td.reps), loadType: 'plate' };
       const h = timed ? null : progressionHint(exr, p, w.id, range);   // push-ups etc. progress by adding load
-      if (h && h.weight !== undefined) return { weight: h.weight, reps: h.state === 'hold' ? Math.min(range.hi, (h.minReps || range.lo) + 1) : range.lo, loadType: 'plate' };
+      if (h && h.weight !== undefined) return { weight: h.weight, reps: range.lo, loadType: 'plate' };
       const ls = lastSet(exr.id, p) || lastSet(exr.id, other);
       return { weight: ls ? Number(ls.weight) : 0, reps: ls ? Number(ls.reps) : (timed ? 30 : 10), loadType: 'plate' };
     }
@@ -1552,13 +1565,12 @@ function addSetModal(w, exercise, ctx) {
       if (today) return { weight: Number(today.weight), reps: Number(today.reps) };
       // 2. otherwise the progression hint: today's target weight, and a sensible first rep count
       const h = progressionHint(exr, p, w.id, range);
-      if (h && h.weight) return { weight: h.weight,
-        reps: h.state === 'start' ? (h.reps || 9) : h.state === 'hold' ? Math.min(range.hi, (h.minReps || range.lo) + 1) : range.lo };
+      if (h && h.weight) return { weight: h.weight, reps: range.lo };
     }
     // prefer the last time at THIS scheme (heavy/light differ a lot), then any history
     const ls = lastSet(exr.id, p, scheme) || lastSet(exr.id, other, scheme)
             || lastSet(exr.id, p) || lastSet(exr.id, other);
-    return { weight: ls ? Number(ls.weight) : defaultWeight(exr), reps: scheme === PROGRAM.scheme ? 9 : scheme };
+    return { weight: ls ? Number(ls.weight) : defaultWeight(exr), reps: scheme === PROGRAM.scheme ? range.lo : scheme };
   }
 
   const m = $('#modal');
